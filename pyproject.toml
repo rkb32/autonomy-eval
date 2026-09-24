@@ -11,7 +11,8 @@ dependencies = ["pymavlink>=2.4.40"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-demo = ["streamlit>=1.38"]
+demo = ["streamlit>=1.38", "anthropic>=1.0"]
+bisect = ["anthropic>=1.0"]
 
 [project.scripts]
 autonomy-eval = "autonomy_eval.cli:main"

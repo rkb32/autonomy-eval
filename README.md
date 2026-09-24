@@ -46,6 +46,36 @@ are build tooling and parameter-table placement, with no Rover or sailboat code.
 is the simulator making a different tack decision on one run. The tool found a run that genuinely
 behaved differently; the diff says to treat it as a flaky test, not a regression.
 
+## Where to look
+
+Naming the bad build isn't the useful part -- pointing at *why* is. Build labels are ArduPilot git
+SHAs, so `--bisect` fetches the real commit range from GitHub and keeps only the commits that touch
+source directories plausible for the metric that regressed (navigation code for cross-track error,
+`AP_InertialSensor` for vibration, and so on), instead of a person reading a compare link by hand,
+which is how the paragraph above was originally written:
+
+```
+$ autonomy-eval scan examples/*/*.json --bisect
+...
+POSSIBLE CAUSE (bf080274...b2b1b3d2, https://github.com/ArduPilot/ardupilot/compare/bf080274...b2b1b3d2):
+  1 of 15 commit(s) touch related code:
+    a4e55aa9  AC_AttitudeControl: place PosControl parameter conversion tables in rodata
+      libraries/AC_AttitudeControl/AC_PosControl.cpp
+```
+
+That one commit only relocates a parameter table; it doesn't touch control logic, which is the
+same conclusion the hand-written paragraph reached. A directory match is a lead, not a verdict --
+`AC_PosControl.cpp` is in the right neighborhood but the change itself is a memory-layout change.
+That's a real limitation of matching by file path alone, which is why `--bisect` will also ask a
+model for a single "likely true positive / likely false positive" read if `ANTHROPIC_API_KEY` is
+set, grounded only in the commit messages and files it was just given (it's told explicitly not to
+invent ArduPilot internals it wasn't shown). Skipped silently without a key. Both are leads for a
+person to check, not a diagnosis: a commit touching the right file is worth reading, not proof.
+
+When a build is the *first* one in the history (as bf080274 is here), there's no earlier build in
+the dataset to diff against, so `--bisect` checks the range to the *next* build instead -- the same
+substitution the hand-written analysis made.
+
 ## Web demo
 
 ```bash
@@ -168,3 +198,7 @@ written.
 - Metric directions ("higher is worse") and the minimum-change thresholds are hand-set for
   ground and surface vehicles; copters and planes would want their own (e.g. altitude tracking).
   Vehicle type for `.bin` logs is mapped from `FRAME_CLASS` for Rover and Copter frames only.
+- `--bisect` only works when build labels are real ArduPilot git SHAs (not e.g. `.json` summaries
+  saved under your own filenames), and matches commits by source directory, which can name a file
+  in the right neighborhood whose actual change is unrelated (the bf080274 case above) -- worth a
+  human's five minutes, not a verdict. Unauthenticated GitHub API calls are rate-limited to 60/hour.

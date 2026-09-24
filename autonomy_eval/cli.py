@@ -14,9 +14,10 @@ import json
 import sys
 from concurrent.futures import ProcessPoolExecutor
 
+from . import bisect
 from .compare import MIN_BASELINE, Incomparable, compare, scan, vehicle_kind
 from .metrics import load
-from .report import render, render_scan, to_dict
+from .report import render, render_bisection, render_scan, to_dict, to_dict_bisection
 
 
 def _load_all(paths: list[str]):
@@ -37,10 +38,26 @@ def cmd_summarize(args) -> int:
     return 0
 
 
+def _bisect_check(result, baseline, do_it: bool):
+    if not (do_it and result.regressions and baseline):
+        return None
+    b = bisect.localize(result.regressions[0].metric, baseline[-1].label, result.candidate.label)
+    if b is not None and not b.error:
+        b.ai = bisect.ai_verdict(b)
+    return b
+
+
 def cmd_check(args) -> int:
     candidate, *baseline = _load_all([args.log, *args.baseline])
     result = compare(candidate, baseline)
-    print(json.dumps(to_dict(result), indent=1) if args.json else render(result))
+    b = _bisect_check(result, baseline, args.bisect)
+    if args.json:
+        d = to_dict(result)
+        if b:
+            d["bisection"] = to_dict_bisection(b)
+        print(json.dumps(d, indent=1))
+    else:
+        print(render(result) + (render_bisection(b) if b else ""))
     return 1 if result.failed else 0
 
 
@@ -48,22 +65,34 @@ def cmd_scan(args) -> int:
     groups: dict[tuple, list] = {}
     for run in _load_all(args.logs):
         groups.setdefault((run.vehicle, run.mav_type), []).append(run)
-    all_results = []
+    all_results, bisections = [], {}
     for (vehicle, mav_type), runs in groups.items():
         if len(runs) <= MIN_BASELINE:
             print(f"skipping {len(runs)} {vehicle_kind(vehicle, mav_type)} run(s): need more than {MIN_BASELINE} to scan", file=sys.stderr)
             continue
         results = scan(runs)
         all_results += results
+        if args.bisect:
+            for r in results:
+                if r.failed:
+                    bisections[id(r)] = bisect.for_comparison(r, runs)
         if not args.json:
             print(f"== {vehicle_kind(vehicle, mav_type)}: {len(runs)} runs ==")
             print(render_scan(results))
             for r in results:
                 if r.failed:
-                    print("\n" + "-" * 60 + "\n" + render(r))
+                    b = bisections.get(id(r))
+                    print("\n" + "-" * 60 + "\n" + render(r) + (render_bisection(b) if b else ""))
             print()
     if args.json:
-        print(json.dumps([to_dict(r) for r in all_results], indent=1))
+        dicts = []
+        for r in all_results:
+            d = to_dict(r)
+            b = bisections.get(id(r))
+            if b:
+                d["bisection"] = to_dict_bisection(b)
+            dicts.append(d)
+        print(json.dumps(dicts, indent=1))
     return 1 if any(r.failed for r in all_results) else 0
 
 
@@ -78,13 +107,17 @@ def main(argv: list[str] | None = None) -> int:
 
     c = sub.add_parser("check", help="compare a new flight against a baseline of earlier ones")
     c.add_argument("log")
-    c.add_argument("--baseline", nargs="+", required=True)
+    c.add_argument("--baseline", nargs="+", required=True, help="oldest to newest")
     c.add_argument("--json", action="store_true")
+    c.add_argument("--bisect", action="store_true",
+                    help="for a regression, fetch the GitHub commits between the last baseline build and this "
+                         "one that touch related code (needs network; ANTHROPIC_API_KEY adds a likely-TP/FP read)")
     c.set_defaults(fn=cmd_check)
 
     sc = sub.add_parser("scan", help="find the odd run out in a history of runs")
-    sc.add_argument("logs", nargs="+")
+    sc.add_argument("logs", nargs="+", help="oldest to newest")
     sc.add_argument("--json", action="store_true")
+    sc.add_argument("--bisect", action="store_true", help="see `check --bisect`")
     sc.set_defaults(fn=cmd_scan)
 
     args = p.parse_args(argv)

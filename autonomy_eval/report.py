@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from .bisect import Bisection
 from .compare import Comparison, Finding
 
 SEVERITY = ["EMERGENCY", "ALERT", "CRITICAL", "ERROR", "WARNING", "NOTICE", "INFO", "DEBUG"]
@@ -79,6 +80,23 @@ def render(c: Comparison) -> str:
     return "\n".join(out)
 
 
+def render_bisection(b: Bisection) -> str:
+    out = [f"\nPOSSIBLE CAUSE ({b.base}...{b.head}, {b.compare_url}):"]
+    if b.error:
+        out.append(f"  not localized: {b.error}")
+        return "\n".join(out)
+    if not b.suspects:
+        out.append(f"  none of the {b.total_commits} commit(s) in this range touch code related to this metric")
+    else:
+        out.append(f"  {len(b.suspects)} of {b.total_commits} commit(s) touch related code:")
+        for s in b.suspects:
+            out.append(f"    {s.sha}  {s.message}")
+            out += [f"      {f}" for f in s.files]
+    if b.ai:
+        out.append(f"  AI read: {b.ai.label} -- {b.ai.reason}")
+    return "\n".join(out)
+
+
 def render_scan(comparisons: list[Comparison]) -> str:
     out = ["leave-one-out scan: each run compared against all the others\n"]
     width = max(len(c.candidate.label) for c in comparisons)
@@ -94,6 +112,14 @@ def render_scan(comparisons: list[Comparison]) -> str:
             top = ""
         out.append(f"  {c.candidate.label:<{width}}  {status:<9}  {c.flag_count:>2} flag(s)  {top}")
     return "\n".join(out)
+
+
+def to_dict_bisection(b: Bisection) -> dict:
+    return {
+        "compare_url": b.compare_url, "total_commits": b.total_commits, "error": b.error,
+        "suspects": [asdict(s) for s in b.suspects],
+        "ai": asdict(b.ai) if b.ai else None,
+    }
 
 
 def to_dict(c: Comparison) -> dict:

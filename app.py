@@ -12,6 +12,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from autonomy_eval import bisect as bisect_mod
 from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
@@ -90,7 +91,41 @@ def metric_chart(results: list[Comparison], metric: str) -> alt.Chart:
     return (line + median + dots).properties(height=300)
 
 
-def show_detail(c: Comparison) -> None:
+@st.cache_data(show_spinner="Checking the ArduPilot commit history...")
+def cached_bisection(metric: str, base: str, head: str):
+    b = bisect_mod.localize(metric, base, head)
+    if b is not None and not b.error:
+        b.ai = bisect_mod.ai_verdict(b)
+    return b
+
+
+def show_bisection(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
+    pair = bisect_mod.neighbor_build(c.candidate, ordered_runs)
+    if pair is None:
+        return
+    base, head = pair
+    b = cached_bisection(c.regressions[0].metric, base.label, head.label)
+    if b is None:
+        return
+    st.markdown(f"**Possible cause** ([{b.base}...{b.head}]({b.compare_url}))")
+    if b.error:
+        st.caption(f"not localized: {b.error}")
+        return
+    if not b.suspects:
+        st.caption(f"None of the {b.total_commits} commit(s) in this range touch code related to "
+                   f"{label(c.regressions[0].metric)}. That itself is evidence this is noise, not a firmware bug.")
+    else:
+        st.caption(f"{len(b.suspects)} of {b.total_commits} commit(s) touch related code:")
+        for s in b.suspects:
+            st.markdown(f"- `{s.sha}` {s.message} — {', '.join(s.files)}")
+    if b.ai:
+        icon = "🟢" if "false" in b.ai.label else ("🔴" if "true" in b.ai.label else "🟡")
+        st.markdown(f"{icon} **AI read: {b.ai.label}** — {b.ai.reason}")
+    else:
+        st.caption("Set ANTHROPIC_API_KEY to also get an AI likely-true/false-positive read on this.")
+
+
+def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
     cand = c.candidate
     st.markdown(f"**{cand.label}** ({vehicle_kind(cand.vehicle, cand.mav_type)}), compared against "
                 f"{len(c.baseline)} other runs: {', '.join(b.label for b in c.baseline)}")
@@ -107,6 +142,8 @@ def show_detail(c: Comparison) -> None:
             "normal (median)": f.median,
             "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
         } for f in c.findings]), hide_index=True, use_container_width=True)
+    if c.regressions:
+        show_bisection(c, ordered_runs)
     if c.new_alarms:
         st.error("New warnings/errors never seen before:\n\n" +
                  "\n".join(f"- [{SEVERITY[m.severity]}] {m.text}" for m in c.new_alarms))
@@ -136,7 +173,7 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
     worst = next((c.candidate.label for c in results if c.failed), results[0].candidate.label)
     choice = st.selectbox("Look at one run in detail", [c.candidate.label for c in results],
                           index=[c.candidate.label for c in results].index(worst), key=f"{key}-detail")
-    show_detail(next(c for c in results if c.candidate.label == choice))
+    show_detail(next(c for c in results if c.candidate.label == choice), runs)
 
 
 st.title("autonomy-eval")
@@ -160,10 +197,10 @@ with tab_ci:
     if folder == "ardurover-surface-boat":
         st.markdown(
             "**What happened in build bf080274:** the boat tacked one extra time, which alone explains "
-            "the 13 extra seconds and the worse tracking. The "
-            "[commits between it and the next build](https://github.com/ArduPilot/ardupilot/compare/bf080274...b2b1b3d2) "
-            "touch build tooling, not Rover code, so the likely cause is the simulator making a different "
-            "tack decision: a flaky test, not a firmware bug. Knowing which is the point."
+            "the 13 extra seconds and the worse tracking. \"Possible cause\" above (found automatically, "
+            "not written by hand) agrees: the one commit it flags only relocates a parameter table, not "
+            "control logic, so the likely cause is the simulator making a different tack decision -- a "
+            "flaky test, not a firmware bug. Knowing which is the point."
         )
     else:
         st.markdown(
@@ -177,7 +214,9 @@ with tab_upload:
         f"Upload at least {MIN_BASELINE + 1} logs of the **same vehicle and mission**: MAVLink telemetry "
         "(`.tlog`), ArduPilot DataFlash (`.bin`), or summaries saved by `autonomy-eval summarize -o` "
         "(`.json`). Logs are grouped by the vehicle their contents say they are, and each run is compared "
-        "against the rest. Files are processed in memory for this session and not kept."
+        "against the rest. Files are processed in memory for this session and not kept. Upload them "
+        "oldest build first: a regression's \"possible cause\" looks for the ArduPilot commits between "
+        "the upload right before it and itself."
     )
     files = st.file_uploader("Flight logs", type=["tlog", "bin", "json"], accept_multiple_files=True)
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):
