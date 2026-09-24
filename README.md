@@ -1,5 +1,7 @@
 # autonomy-eval
 
+**Live demo: https://autonomy-eval.streamlit.app** (no install; try it with your own logs)
+
 Catches flight regressions. Give it the telemetry log from a new test flight plus the logs from
 earlier flights of the same vehicle, and it tells you what got worse than normal, in plain
 language, with an exit code CI can gate on.
