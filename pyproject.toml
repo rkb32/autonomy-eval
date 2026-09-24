@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autonomy-eval"
+version = "0.1.0"
+description = "Flight regression detection for ArduPilot/MAVLink telemetry logs"
+requires-python = ">=3.10"
+dependencies = ["pymavlink>=2.4.40"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+autonomy-eval = "autonomy_eval.cli:main"
+
+[tool.setuptools]
+packages = ["autonomy_eval"]

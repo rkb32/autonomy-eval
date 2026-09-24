@@ -1,0 +1,32 @@
+leave-one-out scan: each run compared against all the others
+
+  bf080274  ok          0 flag(s)  
+  b2b1b3d2  REGRESSED   1 flag(s)  vibration (p95): 0.904 m/s/s, baseline 0.865 m/s/s  (+4.6%)
+  665c0dee  changed     1 flag(s)  event: PreArm: AHRS: DCM Yaw inconsistent N deg. Wait or reboot: 1, baseline 0
+  9165d224  REGRESSED   3 flag(s)  event: PreArm: AHRS: DCM Yaw inconsistent N deg. Wait or reboot: 1, baseline 0
+  368dc0c4  ok          0 flag(s)  
+  0d38ef16  ok          0 flag(s)  
+  9256cd77  ok          0 flag(s)  
+  a64bad1a  ok          0 flag(s)  
+
+------------------------------------------------------------
+b2b1b3d2  (ArduRover, data\heldout\run-1789677528539323.tlog)
+compared against 7 earlier runs: bf080274, 665c0dee, 9165d224, 368dc0c4, 0d38ef16, 9256cd77, a64bad1a
+  note: 535 corrupt telemetry frames skipped while reading
+
+REGRESSIONS (worse than every-day variation):
+  vibration (p95): 0.904 m/s/s, baseline 0.865 m/s/s  (+4.6%)
+
+------------------------------------------------------------
+9165d224  (ArduRover, data\heldout\run-1789844277149603.tlog)
+compared against 7 earlier runs: bf080274, b2b1b3d2, 665c0dee, 368dc0c4, 0d38ef16, 9256cd77, a64bad1a
+  note: 536 corrupt telemetry frames skipped while reading
+
+OTHER CHANGES:
+  event: PreArm: AHRS: DCM Yaw inconsistent N deg. Wait or reboot: 1, baseline 0
+
+NEW WARNINGS / ERRORS (never seen in any baseline run):
+  [CRITICAL] PreArm: Mode not armable
+
+MISSING MESSAGES (seen in every baseline run, absent here):
+  PreArm: GPS N: Bad fix
