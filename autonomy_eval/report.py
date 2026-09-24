@@ -26,7 +26,7 @@ LABELS = {
     "vibe_p95": ("vibration (p95)", "m/s/s"),
     "clip_total": ("accelerometer clipping events", ""),
     "gps_sats_min": ("fewest GPS satellites", ""),
-    "gps_eph_p95_m": ("GPS horizontal accuracy (p95)", "m"),
+    "gps_hdop_p95": ("GPS HDOP, dilution of precision (p95)", ""),
     "batt_min_v": ("lowest battery voltage", "V"),
 }
 

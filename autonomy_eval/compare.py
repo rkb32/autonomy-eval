@@ -50,7 +50,7 @@ MIN_EFFECT = {
     "ekf_pos_horiz_var_p95": 0.05,
     "ekf_pos_vert_var_p95": 0.05,
     "ekf_compass_var_p95": 0.05,
-    "gps_eph_p95_m": 0.25,
+    "gps_hdop_p95": 0.25,
     "batt_min_v": 0.1,
 }
 
@@ -149,6 +149,10 @@ def check_comparable(candidate: FlightSummary, baseline: list[FlightSummary]) ->
         notes.append(f"only {len(baseline)} baseline runs; spread estimates are rough")
     if candidate.firmware and candidate.firmware in {b.firmware for b in baseline}:
         notes.append(f"firmware {candidate.firmware} also appears in the baseline")
+    formats = {s.quality.get("format", "tlog") for s in (candidate, *baseline)}
+    if len(formats) > 1:
+        notes.append("mixing .bin and .tlog logs: .bin stores EKF variances at 0.01 resolution and sees "
+                     "sub-second arm/disarm that 1 Hz telemetry misses, so small cross-format differences are expected")
     return notes
 
 

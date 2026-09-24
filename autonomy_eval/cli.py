@@ -4,7 +4,8 @@
   autonomy-eval check NEW --baseline OLD [OLD ...] is NEW worse than the baseline? exit 1 if so (CI gate)
   autonomy-eval scan LOG LOG LOG ...               leave-one-out: which run in a history is the odd one out?
 
-LOG is a MAVLink .tlog, or a summary .json written by `summarize -o`.
+LOG is a MAVLink telemetry log (.tlog), an ArduPilot DataFlash log (.bin), or a summary .json
+written by `summarize -o`. The format is detected from the file contents, not the extension.
 """
 from __future__ import annotations
 

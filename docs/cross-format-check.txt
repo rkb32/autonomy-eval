@@ -1,0 +1,50 @@
+reading data/autotest/Rover-Scripting-autotest-1790170201978347.tlog ...
+re-reading data/autotest/Rover-Scripting-autotest-1790170201978347.tlog for 2 flight(s) ...
+
+Rover-Scripting-00000089.BIN  vs  tlog 5093.7-5200.7s
+  metric                             .bin      .tlog  diff
+  armed_time_s                   107.3004    107.001  
+  batt_min_v                         11.9       11.9  
+  clip_total                          0.0        0.0  
+  ekf_compass_var_p95                0.01     0.0196  49%
+  ekf_pos_horiz_var_p95              0.01     0.0191  48%
+  ekf_pos_vert_var_p95               0.01      0.019  47%
+  ekf_vel_var_p95                    0.02      0.025  20%
+  errors                              0.0        0.0  
+  flights                             1.0        1.0  
+  gps_hdop_p95                       1.21       1.21  
+  gps_sats_min                       10.0       10.0  
+  missions_completed                  0.0        0.0  
+  mode_changes                        0.0        0.0  
+  reboots                             0.0        1.0  100%
+  vibe_p95                         0.0956     0.0985  3%
+  warnings                            0.0        0.0  
+  waypoints_reached                   0.0        0.0  
+  xtrack_max_m                     4.3809     4.3809  
+  xtrack_mean_m                    1.4003     1.4048  
+  xtrack_p95_m                      3.833      3.833  
+  in-flight message kinds: 2 in both, 0 only in .bin, 0 only in .tlog
+
+Rover-Scripting-00000090.BIN  vs  tlog 5364.6-5607.7s
+  metric                             .bin      .tlog  diff
+  armed_time_s                   243.1002    243.021  
+  batt_min_v                      12.5288     12.528  
+  clip_total                          0.0        0.0  
+  ekf_compass_var_p95                0.01     0.0152  34%
+  ekf_pos_horiz_var_p95              0.02     0.0218  8%
+  ekf_pos_vert_var_p95               0.01     0.0193  48%
+  ekf_vel_var_p95                    0.01     0.0181  45%
+  errors                              9.0        0.0  100%
+  flights                             2.0        1.0  50%
+  gps_hdop_p95                       1.21       1.21  
+  gps_sats_min                       10.0       10.0  
+  missions_completed                  0.0        0.0  
+  mode_changes                       17.0       17.0  
+  reboots                             0.0        0.0  
+  vibe_p95                         0.0479     0.0481  
+  warnings                            0.0        0.0  
+  waypoints_reached                   0.0        0.0  
+  xtrack_max_m                     2.9587     2.9591  
+  xtrack_mean_m                    0.5981     0.5997  
+  xtrack_p95_m                     2.1332      2.128  
+  in-flight message kinds: 5 in both, 3 only in .bin, 0 only in .tlog

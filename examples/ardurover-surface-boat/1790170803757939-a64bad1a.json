@@ -23,7 +23,7 @@
   "ekf_vel_var_p95": 0.0111,
   "errors": 0.0,
   "flights": 2.0,
-  "gps_eph_p95_m": 1.21,
+  "gps_hdop_p95": 1.21,
   "gps_sats_min": 10.0,
   "missions_completed": 2.0,
   "mode_changes": 2.0,
@@ -63,6 +63,7 @@
  ],
  "quality": {
   "corrupt_frames": 37,
+  "format": "tlog",
   "log_duration_s": 301.3
  },
  "severity": {

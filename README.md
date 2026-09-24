@@ -56,11 +56,13 @@ autonomy-eval summarize flight.tlog -o flight.json     # save a summary to reuse
 ```
 
 `check` exits `0` if clean, `1` on a regression (for CI), `2` if the logs can't be compared.
-Logs can be raw MAVLink `.tlog` files or saved `.json` summaries, so CI doesn't re-parse history.
+Logs can be MAVLink telemetry (`.tlog`, what a ground station saves), ArduPilot DataFlash (`.bin`,
+what the autopilot writes to its SD card), or saved `.json` summaries so CI doesn't re-parse
+history. The format is detected from the file's contents, not its name.
 
 To pull fresh runs from ArduPilot CI: `python scripts/fetch_autotest.py ArduCopter-TerrainFailsafe`.
 
-## Five things the real data got wrong that a demo wouldn't have
+## Six things the real data got wrong that a demo wouldn't have
 
 Each of these broke a naive first version.
 
@@ -79,6 +81,38 @@ Each of these broke a naive first version.
 5. **The index lists files that are gone.** ArduPilot's log server keeps deleted logs in its
    listing (my first download was an HTML 404 page saved as `.bin`). That's also why the summaries
    are committed in `examples/`: the raw logs will disappear, the result shouldn't.
+6. **The harness is in the autopilot's own log, too.** ArduPilot writes text it *receives* into its
+   `.bin` as `SRC=250/250:...`. In one rover log, 63 of 71 "in-flight message kinds" were the
+   harness talking. DataFlash has no per-record source ID, but that prefix names the sender, so
+   the same rule applies: only the vehicle's own messages count.
+
+## Same flight, two formats
+
+ArduPilot CI records every flight twice: telemetry for the whole session in one `.tlog`, and the
+autopilot's own `.bin` per boot. `scripts/cross_format_check.py` finds a `.bin` flight inside the
+session `.tlog` and summarizes both. Two flights from build a64bad1a
+([full output](docs/cross-format-check.txt)):
+
+| metric | boat `.bin` | boat `.tlog` | rover `.bin` | rover `.tlog` |
+|---|---|---|---|---|
+| time armed | 107.3 s | 107.0 s | 243.1 s | 243.0 s |
+| mean cross-track error | 1.400 m | 1.405 m | 0.598 m | 0.600 m |
+| worst cross-track error | 4.381 m | 4.381 m | 2.959 m | 2.959 m |
+| lowest battery | 11.90 V | 11.90 V | 12.53 V | 12.53 V |
+| in-flight mode changes | 0 | 0 | 17 | 17 |
+| in-flight message kinds | 2 | 2 (same 2) | 8 | 5 (all 5 shared) |
+
+Where they disagree, I traced why before calling it validated:
+
+- **EKF variances** differ by up to 0.01. DataFlash stores them as int16 × 0.01, so a true 0.019
+  is logged as 0.01 or 0.02. Below the 0.05 reporting threshold.
+- **Rover: 2 flights in `.bin`, 1 in `.tlog`.** The `.bin` records an arm at 62.72 s and a disarm
+  at 63.26 s. Telemetry heartbeats are 1 Hz and never see a half-second arm. `.bin` is right.
+- **Rover: 9 errors in `.bin`, 0 in `.tlog`.** DataFlash has `ERR` records (here, fence
+  failsafes) that have no telemetry equivalent. That accounts for one of the three message kinds
+  only in `.bin`; I haven't traced the other two.
+
+`check` warns when a comparison mixes formats, since these differences are expected.
 
 ## How it decides something is a regression
 
@@ -113,10 +147,13 @@ written.
 
 ## Known gaps
 
-- `.tlog` (MAVLink telemetry) only. DataFlash `.bin` logs carry different message names and would
-  need their own reader.
+- `.bin` support is validated on two flights recorded in both formats, not on a history of builds:
+  the CI server overwrites `.bin` logs daily, so a `.bin` baseline has to be collected over days.
+- DataFlash text has no severity, so in `.bin` logs errors come only from `ERR` records; a new
+  warning that exists only as text won't fail the build.
 - It has not yet caught a **confirmed** firmware regression; the one anomaly it found traces to
   simulator nondeterminism. The strongest next step is to run it on the builds around a known
   ArduPilot bug fix.
 - Metric directions ("higher is worse") and the minimum-change thresholds are hand-set for
   ground and surface vehicles; copters and planes would want their own (e.g. altitude tracking).
+  Vehicle type for `.bin` logs is mapped from `FRAME_CLASS` for Rover and Copter frames only.

@@ -90,3 +90,11 @@ def test_scan_finds_the_odd_one_out():
     runs = history(7) + [run("odd", armed_time_s=257.0, events={"Sailboat: Tacking": 8})]
     failed = [c.candidate.label for c in scan(runs) if c.failed]
     assert failed == ["odd"]
+
+
+def test_mixing_log_formats_is_flagged_as_a_caveat():
+    candidate = run("new")
+    candidate.quality = {"format": "dataflash"}
+    notes = compare(candidate, history()).warnings
+    assert any("mixing .bin and .tlog" in n for n in notes)
+    assert not any("mixing" in n for n in compare(run("new"), history()).warnings)

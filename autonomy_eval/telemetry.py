@@ -1,37 +1,80 @@
-"""Read a MAVLink telemetry log (.tlog) as a clean stream of messages from the vehicle only."""
+"""Read a flight log, in either format, as one stream of format-independent records.
+
+ArduPilot records the same flight two ways: the MAVLink telemetry a ground station saves (.tlog)
+and the autopilot's own onboard DataFlash log (.bin). They name everything differently; readers
+here translate both into the records below, so metrics are computed identically for either.
+
+The format is detected from the file's first bytes, not its extension.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterator
-
-from pymavlink import mavutil
-
-MAV_TYPE_GCS = 6
-MAV_AUTOPILOT_INVALID = 8
+from pathlib import Path
+from typing import Iterator, Union
 
 
 @dataclass
 class Text:
     t: float
-    severity: int
+    severity: int | None      # None: DataFlash MSG records carry no severity
     text: str
 
 
+@dataclass
+class Armed:
+    t: float
+    armed: bool
+
+
+@dataclass
+class Mode:
+    t: float
+    mode: int
+
+
+@dataclass
+class VehicleType:
+    t: float
+    mav_type: int
+
+
+@dataclass
+class Reboot:
+    t: float
+
+
+@dataclass
+class Sample:
+    """One reading of a named signal: xtrack, ekf_vel, ekf_ph, ekf_pv, ekf_mag, vibe, clip, sats, hdop, batt."""
+    t: float
+    name: str
+    value: float
+
+
+@dataclass
+class Corrupt:
+    t: float
+
+
+Record = Union[Text, Armed, Mode, VehicleType, Reboot, Sample, Corrupt]
+
+
 class Clock:
-    """time_boot_ms restarts near zero when the autopilot reboots; stitch reboots into one timeline."""
+    """Boot-relative time restarts near zero when the autopilot reboots; stitch reboots into one timeline."""
 
     def __init__(self) -> None:
         self.offset = 0.0
         self.last: float | None = None
         self.reboots = 0
 
-    def update(self, boot_ms: int) -> float:
-        s = boot_ms / 1000
-        if self.last is not None and s + 1.0 < self.last:
+    def update(self, seconds: float) -> bool:
+        """Advance to `seconds` since boot; True if that means the autopilot just rebooted."""
+        rebooted = self.last is not None and seconds + 1.0 < self.last
+        if rebooted:
             self.offset += self.last
             self.reboots += 1
-        self.last = s
-        return self.now
+        self.last = seconds
+        return rebooted
 
     @property
     def now(self) -> float:
@@ -39,21 +82,21 @@ class Clock:
 
 
 class TextAssembler:
-    """MAVLink 2 splits STATUSTEXT over 50 chars into chunks sharing a non-zero id; id 0 means unchunked."""
+    """Text over 50 chars is split into chunks sharing a non-zero id; id 0 means unchunked.
+    MAVLink STATUSTEXT (id, chunk_seq) and DataFlash MSG (ID, Seq) use the same scheme."""
 
     def __init__(self) -> None:
         self.id: int | None = None
         self.parts: list[str] = []
-        self.start: tuple[float, int] = (0.0, 0)
+        self.start: tuple[float, int | None] = (0.0, None)
 
-    def feed(self, t: float, msg) -> list[Text]:
-        msg_id = getattr(msg, "id", 0)
+    def feed(self, t: float, msg_id: int, severity: int | None, text: str) -> list[Text]:
         if msg_id == 0:
-            return self.flush() + [Text(t, msg.severity, msg.text)]
+            return self.flush() + [Text(t, severity, text)]
         out = self.flush() if msg_id != self.id else []
         if not self.parts:
-            self.id, self.start = msg_id, (t, msg.severity)
-        self.parts.append(msg.text)
+            self.id, self.start = msg_id, (t, severity)
+        self.parts.append(text)
         return out
 
     def flush(self) -> list[Text]:
@@ -65,60 +108,14 @@ class TextAssembler:
         return [Text(t, sev, text)]
 
 
-def _is_vehicle_heartbeat(msg) -> bool:
-    return msg.type != MAV_TYPE_GCS and msg.autopilot != MAV_AUTOPILOT_INVALID
+def is_dataflash(path: str | Path) -> bool:
+    with open(path, "rb") as f:
+        return f.read(3) == b"\xa3\x95\x80"   # DataFlash message header + the FMT message id
 
 
-def read_vehicle(path: str, sysid: int | None = None) -> Iterator[tuple[float, object]]:
-    """Yield (t, msg) for messages from the vehicle, on a reboot-aware clock.
-
-    The vehicle is identified from its own HEARTBEAT, not assumed: autotest logs also carry a
-    test harness (sysid 250) whose chatter would otherwise be mixed into the vehicle's data.
-    Messages seen before the vehicle's first heartbeat are held and replayed once it is known.
-    STATUSTEXT is yielded already reassembled, as Text.
-    """
-    conn = mavutil.mavlink_connection(path, robust_parsing=True)
-    clock, texts = Clock(), TextAssembler()
-    pending: list = []
-    while True:
-        msg = conn.recv_match()
-        if msg is None:
-            break
-        mtype = msg.get_type()
-        if mtype == "BAD_DATA":
-            yield clock.now, msg
-            continue
-        if sysid is None:
-            if mtype == "HEARTBEAT" and _is_vehicle_heartbeat(msg):
-                sysid = msg.get_srcSystem()
-                backlog, pending = pending, []
-                for old in backlog:
-                    yield from _emit(old, sysid, clock, texts)
-            else:
-                pending.append(msg)
-                continue
-        yield from _emit(msg, sysid, clock, texts)
-    for text in texts.flush():
-        yield text.t, text
-    yield clock.now, _Reboots(clock.reboots)
-
-
-def _emit(msg, sysid, clock, texts):
-    if msg.get_srcSystem() != sysid:
-        return
-    boot_ms = getattr(msg, "time_boot_ms", None)
-    if boot_ms is not None:
-        clock.update(boot_ms)
-    if msg.get_type() == "STATUSTEXT":
-        for text in texts.feed(clock.now, msg):
-            yield text.t, text
-    else:
-        yield clock.now, msg
-
-
-@dataclass
-class _Reboots:
-    count: int
-
-    def get_type(self) -> str:
-        return "_REBOOTS"
+def read(path: str | Path) -> Iterator[Record]:
+    if is_dataflash(path):
+        from .dataflash import read_dataflash
+        return read_dataflash(str(path))
+    from .tlog import read_tlog
+    return read_tlog(str(path))

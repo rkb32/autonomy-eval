@@ -73,8 +73,9 @@ def main() -> int:
     args = p.parse_args()
 
     args.cache.mkdir(parents=True, exist_ok=True)
+    cached = {p.name for p in args.cache.glob(f"{args.test}-autotest-*.tlog")}
     paths = []
-    for name in list_logs(args.test):
+    for name in sorted(set(list_logs(args.test)) | cached):   # the server drops old runs; the cache keeps them
         if (args.cache / name).exists():
             paths.append(args.cache / name)
             continue
