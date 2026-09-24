@@ -24,6 +24,13 @@ def read_tlog(path: str, sysid: int | None = None) -> Iterator[Record]:
     seen before the vehicle's first heartbeat are held and replayed once it is known.
     """
     conn = mavutil.mavlink_connection(path, robust_parsing=True)
+    try:
+        yield from _read(conn, sysid)
+    finally:
+        conn.close()     # an open handle keeps the file locked on Windows
+
+
+def _read(conn, sysid: int | None) -> Iterator[Record]:
     clock, texts = Clock(), TextAssembler()
     pending: list = []
     compid = None

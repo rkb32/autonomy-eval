@@ -50,6 +50,13 @@ EV_ARMED, EV_DISARMED = 10, 11
 
 def read_dataflash(path: str) -> Iterator[Record]:
     log = DFReader.DFReader_binary(path, zero_time_base=True)
+    try:
+        yield from _read(log)
+    finally:
+        log.close()      # an open handle (and memory map) keeps the file locked on Windows
+
+
+def _read(log) -> Iterator[Record]:
     clock, texts = Clock(), TextAssembler()
     firmware = frame_class = None
     have_arm_msg = False

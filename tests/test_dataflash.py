@@ -57,3 +57,15 @@ def test_bin_and_tlog_of_different_vehicles_are_still_refused():
     boats = [load(p) for p in sorted((Path(__file__).parents[1] / "examples" / "ardurover-surface-boat").glob("*.json"))]
     with pytest.raises(Incomparable, match="ground rover.*surface boat"):
         compare(rover, boats)
+
+
+def test_log_files_are_released_after_reading(tmp_path):
+    # On Windows an open handle stops the file being deleted; the web demo's temp-dir cleanup crashed on it.
+    copy = tmp_path / "flight.bin"
+    copy.write_bytes(BOOT.read_bytes())
+    junk = tmp_path / "junk.tlog"
+    junk.write_bytes(bytes((i * 7919) % 251 for i in range(3000)))
+    assert load(copy).vehicle == "ArduRover"
+    assert load(junk).vehicle is None          # not a flight log: nothing identified, and no crash
+    copy.unlink()
+    junk.unlink()

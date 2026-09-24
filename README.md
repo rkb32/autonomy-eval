@@ -44,6 +44,15 @@ are build tooling and parameter-table placement, with no Rover or sailboat code.
 is the simulator making a different tack decision on one run. The tool found a run that genuinely
 behaved differently; the diff says to treat it as a flaky test, not a regression.
 
+## Web demo
+
+```bash
+pip install -e ".[demo]" && streamlit run app.py
+```
+
+Three tabs: the CI result above with a chart of each metric across builds, an upload box for your
+own `.tlog` / `.bin` logs, and the cross-format check below. It runs the same code as the CLI.
+
 ## Run it
 
 ```bash
