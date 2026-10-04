@@ -42,7 +42,7 @@ def is_noise(name: str) -> bool:
     timers it updates itself, calibration results, per-unit identifiers. Reporting those buries the one
     default that actually changed under dozens of lines that always differ.
 
-    TODO(human): decide which parameters to treat as noise. Return True to hide a change.
+    Not filtering anything yet, so every difference is reported.
     """
     return False
 
