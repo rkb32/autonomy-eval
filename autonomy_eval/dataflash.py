@@ -19,7 +19,7 @@ from typing import Iterator
 
 from pymavlink import DFReader
 
-from .telemetry import Armed, Clock, Mode, Reboot, Record, Sample, Text, TextAssembler, VehicleType
+from .telemetry import Armed, Clock, Mode, Param, Reboot, Record, Sample, Text, TextAssembler, VehicleType
 
 ERROR = 3  # MAV_SEVERITY_ERROR
 BANNER_RE = re.compile(r"^(ArduCopter|ArduPlane|ArduRover|ArduSub|Blimp|AntennaTracker) V")
@@ -77,10 +77,12 @@ def _read(log) -> Iterator[Record]:
             for text in texts.feed(t, getattr(m, "ID", 0), None, m.Message):
                 if not RELAYED_RE.match(text.text):
                     yield text
-        elif kind == "PARM" and m.Name == "FRAME_CLASS" and frame_class is None:
-            frame_class = int(m.Value)
-            if firmware:
-                yield from _vehicle_type(t, firmware, frame_class)
+        elif kind == "PARM":
+            yield Param(t, m.Name, float(m.Value))
+            if m.Name == "FRAME_CLASS" and frame_class is None:
+                frame_class = int(m.Value)
+                if firmware:
+                    yield from _vehicle_type(t, firmware, frame_class)
         elif kind == "ERR" and m.ECode != 0:
             name = ERR_SUBSYSTEMS.get(m.Subsys, f"subsystem {m.Subsys}")
             yield Text(t, ERROR, f"ERR: {name} code {m.ECode}")

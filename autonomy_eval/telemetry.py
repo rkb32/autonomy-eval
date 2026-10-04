@@ -52,11 +52,19 @@ class Sample:
 
 
 @dataclass
+class Param:
+    """A parameter's value as the autopilot logged it (DataFlash PARM; logged at boot and on every change)."""
+    t: float
+    name: str
+    value: float
+
+
+@dataclass
 class Corrupt:
     t: float
 
 
-Record = Union[Text, Armed, Mode, VehicleType, Reboot, Sample, Corrupt]
+Record = Union[Text, Armed, Mode, VehicleType, Reboot, Sample, Param, Corrupt]
 
 
 class Clock:

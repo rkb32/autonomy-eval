@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from .telemetry import Armed, Corrupt, Mode, Reboot, Record, Sample, Text, VehicleType, is_dataflash, read
+from .telemetry import Armed, Corrupt, Mode, Param, Reboot, Record, Sample, Text, VehicleType, is_dataflash, read
 
 INFO, DEBUG = 6, 7  # MAV_SEVERITY levels; text with no severity is treated as INFO
 GRACE_S = 1.0     # heartbeats are 1 Hz, so the armed flag can lag the arm message by up to a second
@@ -43,6 +43,7 @@ class FlightSummary:
     preflight: list[str] = field(default_factory=list)         # pre-flight messages, presence only
     severity: dict[str, int] = field(default_factory=dict)     # most severe level seen per message kind
     quality: dict[str, float] = field(default_factory=dict)    # about the recording, not the vehicle
+    params: dict[str, float] = field(default_factory=dict)     # parameter values the vehicle flew with (.bin only)
 
     @property
     def label(self) -> str:
@@ -108,6 +109,8 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
                 armed = False
         elif isinstance(rec, VehicleType):
             s.mav_type = rec.mav_type
+        elif isinstance(rec, Param):
+            s.params[rec.name] = rec.value            # the last value wins: that is what it ended up flying with
         elif isinstance(rec, Armed):
             if rec.armed and not armed:
                 armed_since = t

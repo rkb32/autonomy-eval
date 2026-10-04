@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from . import paramdiff
 from .bisect import Bisection
 from .compare import Comparison, Finding
 
@@ -77,7 +78,41 @@ def render(c: Comparison) -> str:
     if c.missing_messages:
         out.append("\nMISSING MESSAGES (seen in every baseline run, absent here):")
         out += [f"  {e}" for e in c.missing_messages]
+    out += render_param_changes(param_changes(c))
     return "\n".join(out)
+
+
+PARAM_LINES = 12
+
+
+def param_changes(c: Comparison) -> list[paramdiff.ParamChange]:
+    """Parameter changes worth showing next to a regression (none for a clean run or for logs without parameters)."""
+    if not c.regressions:
+        return []
+    return paramdiff.diff_baseline(c.candidate, c.baseline, c.regressions[0].metric)
+
+
+def _param_line(p: paramdiff.ParamChange) -> str:
+    if p.before is None:
+        return f"  {p.name}: not in the baseline, now {_num(p.after)}"
+    if p.after is None:
+        return f"  {p.name}: was {_num(p.before)} in the baseline, now gone"
+    return f"  {p.name}: {_num(p.before)} -> {_num(p.after)}"
+
+
+def render_param_changes(changes: list[paramdiff.ParamChange]) -> list[str]:
+    if not changes:
+        return []
+    related = [p for p in changes if p.related]
+    out = [f"\nPARAMETERS CHANGED SINCE THE BASELINE ({len(related)} in a family that can affect the regression, "
+           f"{len(changes) - len(related)} other):"]
+    shown = changes[:PARAM_LINES]
+    out += [_param_line(p) + ("   <- related" if p.related else "") for p in shown]
+    if len(changes) > len(shown):
+        out.append(f"  ... and {len(changes) - len(shown)} more")
+    out.append("  (a changed default after a firmware upgrade is a common cause of new oscillation; "
+               "a lead to check, not proof)")
+    return out
 
 
 def render_bisection(b: Bisection) -> str:
@@ -132,4 +167,5 @@ def to_dict(c: Comparison) -> dict:
         "new_messages": [asdict(m) | {"level": SEVERITY[m.severity]} for m in c.new_messages],
         "missing_messages": c.missing_messages,
         "warnings": c.warnings,
+        "param_changes": [asdict(p) for p in param_changes(c)],
     }
