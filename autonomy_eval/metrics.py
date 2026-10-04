@@ -28,6 +28,7 @@ WORSE_IF_HIGHER = {
     "armed_time_s", "xtrack_max_m", "xtrack_mean_m", "xtrack_p95_m", "ekf_vel_var_p95",
     "ekf_pos_horiz_var_p95", "ekf_pos_vert_var_p95", "ekf_compass_var_p95", "vibe_p95",
     "clip_total", "gps_hdop_p95", "errors", "warnings", "reboots",
+    "pos_err_mean_m", "pos_err_p95_m", "att_err_p95_deg",
 }
 WORSE_IF_LOWER = {"missions_completed", "waypoints_reached", "gps_sats_min", "batt_min_v"}
 
@@ -85,7 +86,8 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
     texts: list[Text] = []
     flights: list[tuple[float, float]] = []
     armed, armed_since, last_mode, mode_changes = False, 0.0, None, 0
-    series: dict[str, list[float]] = {k: [] for k in ("xtrack", "ekf_vel", "ekf_ph", "ekf_pv", "ekf_mag", "vibe", "hdop")}
+    series: dict[str, list[float]] = {
+        k: [] for k in ("xtrack", "pos_err", "att_err", "ekf_vel", "ekf_ph", "ekf_pv", "ekf_mag", "vibe", "hdop")}
     sats: list[float] = []
     batt: list[float] = []
     clip = corrupt = reboots = 0
@@ -148,9 +150,9 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
         errors += level <= 3
         warnings += level == 4
         missions += x.text.startswith("Mission Complete")
-        waypoints += x.text.startswith("Reached waypoint")
+        waypoints += x.text.startswith(("Reached waypoint", "Reached command"))     # Rover/Plane, Copter
 
-    xt = series["xtrack"]
+    xt, pe = series["xtrack"], series["pos_err"]
     raw = {
         "armed_time_s": sum(b - a for a, b in flights),
         "flights": len(flights),
@@ -163,6 +165,9 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
         "xtrack_mean_m": sum(xt) / len(xt) if xt else None,
         "xtrack_p95_m": percentile(xt, 0.95),
         "xtrack_max_m": max(xt) if xt else None,
+        "pos_err_mean_m": sum(pe) / len(pe) if pe else None,
+        "pos_err_p95_m": percentile(pe, 0.95),
+        "att_err_p95_deg": percentile(series["att_err"], 0.95),
         "ekf_vel_var_p95": percentile(series["ekf_vel"], 0.95),
         "ekf_pos_horiz_var_p95": percentile(series["ekf_ph"], 0.95),
         "ekf_pos_vert_var_p95": percentile(series["ekf_pv"], 0.95),

@@ -34,6 +34,8 @@ MAX_COMMITS = 25  # bound on per-commit API calls; wider ranges are reported but
 SUBSYSTEMS: dict[str, tuple[str, ...]] = {
     "xtrack": ("libraries/AC_WPNav", "libraries/AR_WPNav", "libraries/AC_AttitudeControl",
                "libraries/APM_Control", "libraries/AP_L1_Control", "libraries/AP_Navigation"),
+    "pos_err": ("libraries/AC_WPNav", "libraries/AC_AttitudeControl", "libraries/AP_InertialNav"),
+    "att_err": ("libraries/AC_AttitudeControl", "libraries/AP_Motors", "libraries/AP_InertialSensor"),
     "ekf": ("libraries/AP_NavEKF3", "libraries/AP_NavEKF2", "libraries/AP_NavEKF", "libraries/AP_AHRS",
             "libraries/AP_InertialNav"),
     "vibe": ("libraries/AP_InertialSensor",),

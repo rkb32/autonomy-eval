@@ -18,6 +18,8 @@ from .metrics import FlightSummary
 # Metric prefix -> parameter name prefixes that plausibly affect it.
 RELATED: dict[str, tuple[str, ...]] = {
     "xtrack": ("WPNAV_", "PSC_", "ATC_", "NAVL1_", "WP_", "LOIT_", "CRUISE_"),
+    "pos_err": ("PSC_", "WPNAV_", "ATC_", "LOIT_", "EK3_"),
+    "att_err": ("ATC_", "INS_", "MOT_"),
     "ekf": ("EK3_", "EK2_", "AHRS_", "GPS_"),
     "vibe": ("INS_", "MOT_"),
     "clip": ("INS_",),

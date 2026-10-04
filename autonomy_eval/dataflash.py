@@ -14,6 +14,7 @@ Differences from telemetry that matter here:
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Iterator
 
@@ -44,7 +45,7 @@ ERR_SUBSYSTEMS = {
     30: "internal error", 31: "dead-reckoning failsafe",
 }
 
-WANTED = ["MSG", "ERR", "ARM", "EV", "MODE", "PARM", "NTUN", "XKF4", "VIBE", "GPS", "BAT"]
+WANTED = ["MSG", "ERR", "ARM", "EV", "MODE", "PARM", "NTUN", "PSCN", "PSCE", "ATT", "XKF4", "VIBE", "GPS", "BAT"]
 EV_ARMED, EV_DISARMED = 10, 11
 
 
@@ -60,6 +61,13 @@ def _read(log) -> Iterator[Record]:
     clock, texts = Clock(), TextAssembler()
     firmware = frame_class = None
     have_arm_msg = False
+    # Autopilots that only log while armed start the file at the arming, so the first ARM record in
+    # the file is a disarm. A disarm can only follow an arm, so such a log is armed from its first record.
+    first_arm = log.recv_match(type="ARM")
+    log.rewind()
+    starts_armed = first_arm is not None and not first_arm.ArmState
+    start_t = None
+    pos_n = None                  # (desired, actual) north from PSCN, paired with the east values in PSCE
     clip_by_imu: dict[int, int] = {}
     while True:
         m = log.recv_match(type=WANTED)
@@ -68,6 +76,10 @@ def _read(log) -> Iterator[Record]:
         if clock.update(m.TimeUS / 1e6):
             yield Reboot(clock.now)
         t, kind = clock.now, m.get_type()
+        if start_t is None:
+            start_t = t
+            if starts_armed:
+                yield Armed(t, True)
 
         if kind == "MSG":
             banner = BANNER_RE.match(m.Message)
@@ -95,6 +107,12 @@ def _read(log) -> Iterator[Record]:
             yield Mode(t, m.ModeNum)
         elif kind == "NTUN" and hasattr(m, "XTrack"):
             yield Sample(t, "xtrack", abs(m.XTrack))
+        elif kind == "PSCN":                          # Copter position controller: desired vs actual position
+            pos_n = (m.DPN, m.PN)
+        elif kind == "PSCE" and pos_n is not None:
+            yield Sample(t, "pos_err", math.hypot(pos_n[0] - pos_n[1], m.DPE - m.PE))
+        elif kind == "ATT" and firmware == "ArduCopter" and hasattr(m, "DesRoll"):
+            yield Sample(t, "att_err", max(abs(m.DesRoll - m.Roll), abs(m.DesPitch - m.Pitch)))
         elif kind == "XKF4" and m.C == 0:
             yield Sample(t, "ekf_vel", m.SV)
             yield Sample(t, "ekf_ph", m.SP)
