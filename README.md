@@ -76,6 +76,42 @@ When a build is the *first* one in the history (as bf080274 is here), there's no
 the dataset to diff against, so `--bisect` checks the range to the *next* build instead -- the same
 substitution the hand-written analysis made.
 
+## Upgrade checks: new firmware vs your last build
+
+The main use: you flashed a new build, flew the same mission, and want to know what changed.
+`check` compares the flight, and because `.bin` logs carry the parameter table, it also diffs
+parameters against what every baseline run agreed on (a parameter the baseline runs disagree
+about — per-boot calibration like `INS_GYROFFS_*` — is skipped, so only real changes are
+reported). Metrics follow the vehicle: Copter logs get position and attitude tracking error
+(`PSCN`/`PSCE`, `ATT`), Rover and Plane get cross-track error (`NTUN`).
+
+Validated in SITL (ArduPilot's simulator, in Docker, same mission flown repeatedly):
+
+- **4.6.2 → 4.6.3** (patch release): no metric regressions, 0 of 1397 parameters changed.
+  "Nothing changed" is the correct answer for a patch release, and that's what it said.
+- **4.6.2 → 4.7.1** (minor release): no flight regressions. Under ~345 parameter-table renames
+  (4.7 moved params to unit-suffixed names, e.g. `ANGLE_MAX` → `ATC_ANGLE_MAX`), it surfaced the
+  3 real default changes: `ATC_INPUT_TC` 0.15 → 0.10, `EK3_SRC_OPTIONS` 1 → 0,
+  `LOG_MAV_RATEMAX` 0 → 10.
+- **Does a rename silently drop a custom value?** Tested directly: set a custom `ANGLE_MAX` on
+  4.6.2, booted 4.7.1 on the same parameter storage. The value carried into `ATC_ANGLE_MAX` with
+  the unit conversion applied (2500 centidegrees → 25.0 degrees). ArduPilot's migration tables
+  do their job — and the diff makes every rename visible so you can verify your own settings.
+
+## Does it catch a regression whose size and cause are known?
+
+Fault injection in SITL: 8 identical baseline flights, then the same mission flown 3 times per
+fault level with one parameter changed. `scripts/sitl_runs.py` + `scripts/fault_benchmark.py`
+(~75 s per flight, Docker).
+
+| injected fault | flights | detected |
+|---|---|---|
+| weak position gain (`PSC_POSXY_P` 0.6 / 0.35 / 0.2) | 9 | **9/9** (position error metrics) |
+| wind (`SIM_WIND_SPD` 2 / 5 / 8 m/s) | 9 | 6/9 — 2 m/s sits under the 0.1 m reporting floor, by design |
+| high roll-rate gain (`ATC_RAT_RLL_P` 0.25 / 0.4 / 0.6) | 9 | 3/9 — only 0.6; the 0.4 signal (attitude error +57%) sits under absolute floors set for real hardware |
+| accelerometer noise (`SIM_ACC1_RND` 1.5 / 4 / 10) | 9 | 0/9 — SITL's `VIBE` message isn't driven by injected noise; vibration faults need real hardware |
+| baseline checked against itself (leave-one-out) | 8 | **0 false alarms** |
+
 ## Web demo
 
 ```bash
@@ -192,12 +228,17 @@ written.
   the CI server overwrites `.bin` logs daily, so a `.bin` baseline has to be collected over days.
 - DataFlash text has no severity, so in `.bin` logs errors come only from `ERR` records; a new
   warning that exists only as text won't fail the build.
-- It has not yet caught a **confirmed** firmware regression; the one anomaly it found traces to
-  simulator nondeterminism. The strongest next step is to run it on the builds around a known
-  ArduPilot bug fix.
-- Metric directions ("higher is worse") and the minimum-change thresholds are hand-set for
-  ground and surface vehicles; copters and planes would want their own (e.g. altitude tracking).
-  Vehicle type for `.bin` logs is mapped from `FRAME_CLASS` for Rover and Copter frames only.
+- It has not yet caught a **confirmed** firmware regression in the wild; detection is validated
+  against injected SITL faults of known size (table above), and the one CI anomaly it found traces
+  to simulator nondeterminism.
+- The minimum-change floors are absolute and hand-set for real hardware. SITL baselines are far
+  quieter (vibration floor 1.0 m/s/s vs a SITL baseline of 0.05), so mild simulated faults can sit
+  under them — that's why the 0.4 roll-gain level isn't flagged. Whether floors should scale with
+  the baseline is an open design question.
+- **Vibration faults can't be benchmarked in SITL**: neither accelerometer noise
+  (`SIM_ACC1_RND`) nor motor vibration (`SIM_VIB_MOT_MAX` + `SIM_VIB_MOT_MASK`) moves the `VIBE`
+  metric there — the simulated vehicle has no frame resonance to shake. That row needs real logs.
+- Vehicle type for `.bin` logs is mapped from `FRAME_CLASS` for Rover and Copter frames only.
 - `--bisect` only works when build labels are real ArduPilot git SHAs (not e.g. `.json` summaries
   saved under your own filenames), and matches commits by source directory, which can name a file
   in the right neighborhood whose actual change is unrelated (the bf080274 case above) -- worth a

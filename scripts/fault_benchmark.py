@@ -20,7 +20,9 @@ sys.path.insert(0, str(HERE.parent))
 
 # fault name -> (parameter, strengths from mild to severe)
 FAULTS: dict[str, tuple[str, list[float]]] = {
-    "vibration": ("SIM_VIB_MOT_MAX", [5, 15, 30]),
+    # accelerometer noise (m/s/s): what the VIBE metric measures. SIM_VIB_MOT_MAX is a frequency, not an
+    # amplitude, and with the default motor mask it injects nothing (the first version of this fault did exactly that).
+    "vibration": ("SIM_ACC1_RND", [1.5, 4, 10]),
     "wind": ("SIM_WIND_SPD", [2, 5, 8]),
     "weak-position-gain": ("PSC_POSXY_P", [0.6, 0.35, 0.2]),
     "high-roll-rate-gain": ("ATC_RAT_RLL_P", [0.25, 0.4, 0.6]),
