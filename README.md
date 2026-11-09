@@ -258,11 +258,11 @@ written.
   the baseline is an open design question.
 - **Motor vibration is not benchmarked.** The accelerometer row (table above) reproduces: with `SIM_VIB_FREQ_X/Y/Z=100`,
   `SIM_ACC1_RND` 1.5, 4 and 10 give vibration p95 1.1, 2.92–2.93 and 7.31–7.32 m/s/s over 3 runs each, matching the 1.10, 2.92 and 7.30 in the table. The v2 batch set
-  `SIM_VIB_MOT_MAX=100` without the frequency instead, and gave different values: 9.32 at `SIM_ACC1_RND=4` (run 1 of 3) and 23.5
-  at `SIM_ACC1_RND=10` (run 1 of 3). The motor 1.5 level gave 2.93–3.22 over 3 runs. So the motor batch measures a different
-  signal, and its real-world fidelity is unverified. The motor 1.5 flights ended on landing; the 4 and 10 flights ended on
-  disarm.
-  At motor 1.5 with `EK3_IMU_MASK=2` (EKF uses IMU1 only), one run landed at 176 s and disarmed at 178 s; the unmasked 1.5 flights landed but never disarmed. That fits a lane-switch explanation, but it is one run and the mechanism is not proven. The mask run's vibration (3.47) is left out of the table because the mask changes the estimator's input.
+  `SIM_VIB_MOT_MAX=100` without the frequency instead, and gave different values: 7.1–9.3 at `SIM_ACC1_RND=4` (3 runs: 9.32, 9.10, 7.14) and 16.8–23.5
+  at `SIM_ACC1_RND=10` (3 runs: 23.52, 20.86, 16.76). A landing-end rerun gave 7.7–9.7 at 4 and 18.1–23.8 at 10. The motor 1.5 level gave 2.93–3.22 over 3 runs. So the motor batch measures a different
+  signal, and its real-world fidelity is unverified. The 1.5 flights ended at the landing timeout without disarming. The 4 and 10 batches, old and rerun,
+  all logged LAND_COMPLETE and disarmed about 0.5 s later, so their endings match.
+  At motor 1.5 with `EK3_IMU_MASK=2` (EKF uses IMU1 only), 3 of 3 runs logged LAND_COMPLETE and disarmed 0.5 s later. The unmasked 1.5 flights (`EK3_IMU_MASK=3`, same sim parameters, 3 runs) never disarmed, and none logged LAND_COMPLETE (one logged LAND_MAYBE). That fits a lane-switch explanation, but the mechanism is not proven. The mask runs' vibration (3.47, 3.11, 3.11) is left out of the table because the mask changes the estimator's input.
 - **Stability-margin floors are a guess.** The 5° phase-margin and 1 dB gain-margin floors come from one
   fault level and four baseline flights. They are not validated against other faults.
 - **The margin is of the attitude cascade at the SystemID injection point, not of the rate loop alone.** ArduCopter
@@ -274,8 +274,7 @@ written.
   vertical sinusoid to the simulated GPS altitude only (`libraries/SITL/SIM_GPS.cpp:367`), not horizontal noise.
   Neither NEES nor innovation health flagged it at 2 m or 4 m. Horizontal GPS velocity error (`SIM_GPS_VERR_X=1`
   and `SIM_GPS_VERR_Y=1`) is flagged by `check` in all 3 runs, and again on the landing-end script (velocity variance p95 0.33 vs 0.02). `nees-check` on run 1 shows velocity NEES 1.85 and 1.32
-  vs baseline 0.10 and 0.06, and velocity innovation p95 0.73 vs 0.04. Baseline false-alarm rate for this fault is not
-  measured. A single-metric flag from `triage`
+  vs baseline 0.10 and 0.06, and velocity innovation p95 0.73 vs 0.04. Baseline false-alarm rate, leave-one-out on the 6 landing-end baseline flights (`v6-base`): `ekf_vel_var_p95` is 0.02 in every run, and `check` flags 0 of 6 (all metrics within the normal range). That is 0/6, which bounds the rate only loosely: 95% upper bound about 39%. A single-metric flag from `triage`
   is reported as "possible", not as a real regression.
 - **Unmeasurable margins count as a regression.** If the loop has no usable crossover (coherence falls below 0.6
   near instability), `sysid-check` flags `margin_unmeasurable` and fails. Roll gain 0.4 is flagged this way, not
