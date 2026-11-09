@@ -257,11 +257,12 @@ written.
   under them — that's why the 0.4 roll-gain level isn't flagged. Whether floors should scale with
   the baseline is an open design question.
 - **Motor vibration is not benchmarked.** The accelerometer row (table above) reproduces: with `SIM_VIB_FREQ_X/Y/Z=100`,
-  `SIM_ACC1_RND=4` gives vibration p95 2.92–2.93 m/s/s over 3 runs, matching the 2.92 in the table. The v2 batch set
+  `SIM_ACC1_RND` 1.5, 4 and 10 give vibration p95 1.1, 2.92–2.93 and 7.31–7.32 m/s/s over 3 runs each, matching the 1.10, 2.92 and 7.30 in the table. The v2 batch set
   `SIM_VIB_MOT_MAX=100` without the frequency instead, and gave different values: 9.32 at `SIM_ACC1_RND=4` (run 1 of 3) and 23.5
   at `SIM_ACC1_RND=10` (run 1 of 3). The motor 1.5 level gave 2.93–3.22 over 3 runs. So the motor batch measures a different
   signal, and its real-world fidelity is unverified. The motor 1.5 flights ended on landing; the 4 and 10 flights ended on
   disarm.
+  At motor 1.5 with `EK3_IMU_MASK=2` (EKF uses IMU1 only), one run landed at 176 s and disarmed at 178 s; the unmasked 1.5 flights landed but never disarmed. That fits a lane-switch explanation, but it is one run and the mechanism is not proven. The mask run's vibration (3.47) is left out of the table because the mask changes the estimator's input.
 - **Stability-margin floors are a guess.** The 5° phase-margin and 1 dB gain-margin floors come from one
   fault level and four baseline flights. They are not validated against other faults.
 - **The margin is of the attitude cascade at the SystemID injection point, not of the rate loop alone.** ArduCopter
@@ -272,7 +273,7 @@ written.
 - **Estimator checks did not catch the fault we injected, and that fault was mislabelled.** `SIM_GPS_NOISE` adds a
   vertical sinusoid to the simulated GPS altitude only (`libraries/SITL/SIM_GPS.cpp:367`), not horizontal noise.
   Neither NEES nor innovation health flagged it at 2 m or 4 m. Horizontal GPS velocity error (`SIM_GPS_VERR_X=1`
-  and `SIM_GPS_VERR_Y=1`) is flagged by `check` in all 3 runs. `nees-check` on run 1 shows velocity NEES 1.85 and 1.32
+  and `SIM_GPS_VERR_Y=1`) is flagged by `check` in all 3 runs, and again on the landing-end script (velocity variance p95 0.33 vs 0.02). `nees-check` on run 1 shows velocity NEES 1.85 and 1.32
   vs baseline 0.10 and 0.06, and velocity innovation p95 0.73 vs 0.04. Baseline false-alarm rate for this fault is not
   measured. A single-metric flag from `triage`
   is reported as "possible", not as a real regression.
