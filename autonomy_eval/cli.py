@@ -16,8 +16,12 @@ from concurrent.futures import ProcessPoolExecutor
 
 from . import bisect
 from .compare import MIN_BASELINE, Incomparable, compare, scan, vehicle_kind
-from .metrics import load
+from .metrics import FlightSummary, load, summarize
 from .report import render, render_bisection, render_scan, to_dict, to_dict_bisection
+from .margins import sysid_margins
+from .ekf_health import innovation_metrics
+from .nees import nees_from_file
+from .stepresp import step_metrics
 
 
 def _load_all(paths: list[str]):
@@ -96,6 +100,124 @@ def cmd_scan(args) -> int:
     return 1 if any(r.failed for r in all_results) else 0
 
 
+def _step_flight(path: str) -> FlightSummary:
+    """Only the step-response metrics, so the gate judges steps and nothing else in the flight."""
+    s = summarize(path)
+    return FlightSummary(source=str(path), vehicle=s.vehicle, firmware=s.firmware, mav_type=s.mav_type,
+                         metrics=step_metrics(path))
+
+
+def cmd_step_check(args) -> int:
+    paths = [args.log, *args.baseline]
+    with ProcessPoolExecutor() as pool:
+        flights = list(pool.map(_step_flight, paths))
+    for f in flights:
+        if not f.metrics:
+            print(f"error: no position-controller steps found in {f.source}", file=sys.stderr)
+            return 2
+    candidate, *baseline = flights
+    result = compare(candidate, baseline)
+    if args.json:
+        print(json.dumps(to_dict(result), indent=1))
+    else:
+        print(render(result))
+        print("\n(step metrics are information only: this check does not fail the build)")
+    return 0    # info only: position-error metrics are the gate (see README)
+
+
+def _margin_flight(path: str) -> FlightSummary:
+    """Only the stability margins of a SystemID chirp, so the gate judges the loop and nothing else.
+
+    If the margins cannot be measured (coherence too low at the crossover, which happens near instability),
+    the flight gets margin_unmeasurable = 1, which the gate treats as a regression, not as a pass.
+    """
+    s = summarize(path)
+    m = sysid_margins(path)
+    m["margin_unmeasurable"] = 0.0 if ("margin_pm_deg" in m and "margin_gm_db" in m) else 1.0
+    return FlightSummary(source=str(path), vehicle=s.vehicle, firmware=s.firmware, mav_type=s.mav_type,
+                         metrics=m)
+
+
+def _missing_in_candidate(candidate: FlightSummary, baseline: list[FlightSummary]) -> list[str]:
+    """Metrics every baseline flight has but the candidate lacks: the gate cannot judge those."""
+    common = set.intersection(*(set(b.metrics) for b in baseline)) if baseline else set()
+    return sorted(common - set(candidate.metrics))
+
+
+def cmd_sysid_check(args) -> int:
+    paths = [args.log, *args.baseline]
+    with ProcessPoolExecutor() as pool:
+        flights = list(pool.map(_margin_flight, paths))
+    candidate, *baseline = flights
+    result = compare(candidate, baseline)     # unmeasurable margins are a flagged metric, not an error
+    if args.json:
+        print(json.dumps(to_dict(result), indent=1))
+    else:
+        print(render(result))
+    return 1 if result.failed else 0
+
+
+def _nees_flight(path: str) -> FlightSummary:
+    """Only the estimator-consistency numbers, so the gate judges the EKF and nothing else."""
+    s = summarize(path)
+    return FlightSummary(source=str(path), vehicle=s.vehicle, firmware=s.firmware, mav_type=s.mav_type,
+                         metrics={**{f"nees_{k}": v for k, v in nees_from_file(path).items()},
+                                  **innovation_metrics(path)})
+
+
+def cmd_nees_check(args) -> int:
+    paths = [args.log, *args.baseline]
+    with ProcessPoolExecutor() as pool:
+        flights = list(pool.map(_nees_flight, paths))
+    for f in flights:
+        if not f.metrics:
+            print(f"error: no in-flight EKF data in {f.source}", file=sys.stderr)
+            return 2
+    candidate, *baseline = flights
+    missing = _missing_in_candidate(candidate, baseline)
+    if missing:
+        print(f"error: cannot judge {candidate.source}: missing {', '.join(missing)}", file=sys.stderr)
+        return 2
+    result = compare(candidate, baseline)
+    if args.json:
+        print(json.dumps(to_dict(result), indent=1))
+    else:
+        print(render(result))
+    return 1 if result.failed else 0
+
+
+TRIAGE_MIN_ITEMS = 2   # one flagged item is often noise (a single metric crossed its band by chance)
+
+
+def cmd_triage(args) -> int:
+    """Label a failed or suspicious run: likely real (outside the baseline spread) or within noise (rerun it)."""
+    builders = {"summary": None, "sysid": _margin_flight, "nees": _nees_flight, "step": _step_flight}
+    builder = builders[args.kind]
+    if builder is None:
+        candidate, *baseline = _load_all([args.log, *args.baseline])
+    else:
+        with ProcessPoolExecutor() as pool:
+            candidate, *baseline = list(pool.map(builder, [args.log, *args.baseline]))
+    result = compare(candidate, baseline)
+    names = sorted({f.metric for f in result.regressions} | {m.text for m in result.new_alarms})
+    decisive = {"margin_unmeasurable"} | {m.text for m in result.new_alarms}   # physical signals, never noise
+    if len(names) >= TRIAGE_MIN_ITEMS or decisive & set(names):
+        print(f"LIKELY REAL: {candidate.label} is outside the baseline spread on {len(names)} item(s):")
+        for n in names:
+            print(f"  - {n}")
+        if args.bisect and result.regressions:
+            b = bisect.localize(result.regressions[0].metric, baseline[-1].label, candidate.label)
+            if b is not None and not b.error:
+                print(render_bisection(b))
+        return 1
+    if names:
+        print(f"POSSIBLE, NOT CONFIRMED: only {names[0]} is outside the baseline spread. "
+              f"One item is usually noise; rerun before treating it as real.")
+        return 0
+    print(f"WITHIN NOISE: {candidate.label} matches the baseline spread; rerun before treating it as real.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="autonomy-eval", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -120,11 +242,40 @@ def main(argv: list[str] | None = None) -> int:
     sc.add_argument("--bisect", action="store_true", help="see `check --bisect`")
     sc.set_defaults(fn=cmd_scan)
 
+    st = sub.add_parser("step-check", help="step-response gate: overshoot and settling of a GUIDED step flight")
+    st.add_argument("log")
+    st.add_argument("--baseline", nargs="+", required=True, help="step flights of the previous build(s)")
+    st.add_argument("--json", action="store_true")
+    st.set_defaults(fn=cmd_step_check)
+
+    sy = sub.add_parser("sysid-check", help="stability-margin gate: gain and phase margin of a SystemID chirp")
+    sy.add_argument("log")
+    sy.add_argument("--baseline", nargs="+", required=True, help="SystemID flights of the previous build(s)")
+    sy.add_argument("--json", action="store_true")
+    sy.set_defaults(fn=cmd_sysid_check)
+
+    ne = sub.add_parser("nees-check", help="estimator-consistency gate: is the EKF overconfident against truth?")
+    ne.add_argument("log")
+    ne.add_argument("--baseline", nargs="+", required=True, help="flights of the previous build(s)")
+    ne.add_argument("--json", action="store_true")
+    ne.set_defaults(fn=cmd_nees_check)
+
+    tr = sub.add_parser("triage", help="label a failed run: likely real, or within noise (rerun)")
+    tr.add_argument("log")
+    tr.add_argument("--baseline", nargs="+", required=True, help="passing runs of the same test")
+    tr.add_argument("--kind", choices=["summary", "sysid", "nees", "step"], default="summary",
+                    help="which metrics to triage: flight summary (default), SystemID margins, EKF NEES, or step response")
+    tr.add_argument("--bisect", action="store_true", help="for a likely-real result, localize the commit range")
+    tr.set_defaults(fn=cmd_triage)
+
     args = p.parse_args(argv)
     try:
         return args.fn(args)
     except Incomparable as e:
         print(f"error: {e}", file=sys.stderr)
+        return 2
+    except Exception as e:                       # a missing optional package or a corrupt log is not a regression
+        print(f"error: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
 

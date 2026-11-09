@@ -27,26 +27,29 @@ def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["docker", *args], capture_output=True, text=True, check=check)
 
 
-def fly(params: list[str], speedup: int, volume: str, image: str, run_dir: Path, name: str, attempts: int = 4) -> bool:
-    docker("rm", "-f", name, check=False)
-    docker("run", "-d", "--name", name, "--user", "root", "-p", f"{PORT}:{PORT}",
-           "-v", f"{volume}:/ardupilot", "-v", f"{run_dir.resolve()}:/runs", "-w", "/runs", image,
-           "/ardupilot/build/sitl/bin/arducopter", "--model", "+", "--speedup", str(speedup),
-           "--defaults", "/ardupilot/Tools/autotest/default_params/copter.parm", "--home", HOME, "-I0")
-    try:
-        # SITL ignores mission uploads for its first few seconds, so a failed attempt is retried.
-        for attempt in range(attempts):
-            time.sleep(20 if attempt == 0 else 10)
-            cmd = [sys.executable, str(HERE / "sitl_fly.py"), "--timeout", "600"]
+def fly(params: list[str], speedup: int, volume: str, image: str, run_dir: Path, name: str, attempts: int = 4,
+        script: str = "sitl_fly.py", timeout: int = 600) -> bool:
+    # Every attempt gets a fresh SITL: a retry on a container that already ran would not be the same flight.
+    for attempt in range(attempts):
+        docker("rm", "-f", name, check=False)
+        docker("run", "-d", "--name", name, "--user", "root", "-p", f"127.0.0.1:{PORT}:{PORT}",
+               "-v", f"{volume}:/ardupilot", "-v", f"{run_dir.resolve()}:/runs", "-w", "/runs", image,
+               "/ardupilot/build/sitl/bin/arducopter", "--model", "+", "--speedup", str(speedup),
+               "--defaults", "/ardupilot/Tools/autotest/default_params/copter.parm", "--home", HOME, "-I0")
+        try:
+            time.sleep(20)                             # SITL boot
+            cmd = [sys.executable, str(HERE / script), "--timeout", str(timeout)]
             for p in params:
                 cmd += ["--param", p]
             done = subprocess.run(cmd, capture_output=True, text=True)
             if done.returncode == 0:
                 return True
-            print(f"    attempt {attempt + 1} failed: {done.stdout.strip().splitlines()[-1:] or done.stderr.strip().splitlines()[-1:]}")
-        return False
-    finally:
-        docker("rm", "-f", name, check=False)
+            # stderr carries the traceback; printing only stdout hid the real error
+            print(f"    attempt {attempt + 1} failed: stdout={done.stdout.strip().splitlines()[-1:]} "
+                  f"stderr={done.stderr.strip().splitlines()[-3:]}", flush=True)
+        finally:
+            docker("rm", "-f", name, check=False)
+    return False
 
 
 def main() -> int:
@@ -56,8 +59,13 @@ def main() -> int:
     ap.add_argument("--param", action="append", default=[], help="NAME=VALUE set before arming (a fault to inject)")
     ap.add_argument("--speedup", type=int, default=5)
     ap.add_argument("--volume", default="ardupilot-src")
-    ap.add_argument("--image", default="ardupilot/ardupilot-dev-base:latest")
+    # pinned by digest so a new upstream build cannot silently change the SITL under test
+    ap.add_argument("--image", default="ardupilot/ardupilot-dev-base@sha256:d81c02a9d86ea88b297a66910a6a1f077e8c14cd9ad10e1620b44033e8e371bf")
+    ap.add_argument("--flight", default="sitl_fly.py", help="flight script in scripts/ (e.g. sitl_step.py)")
+    ap.add_argument("--timeout", type=int, default=600, help="wall-clock cap per flight, seconds")
     args = ap.parse_args()
+    if Path(args.flight).name != args.flight or not (HERE / args.flight).is_file():
+        ap.error(f"--flight must be the name of a script in scripts/, got {args.flight!r}")
 
     args.out.mkdir(parents=True, exist_ok=True)
     failed = 0
@@ -66,7 +74,8 @@ def main() -> int:
         shutil.rmtree(run_dir, ignore_errors=True)
         run_dir.mkdir(parents=True)
         print(f"run {i}/{args.runs}", flush=True)
-        ok = fly(args.param, args.speedup, args.volume, args.image, run_dir, f"sitl-runs-{i}")
+        ok = fly(args.param, args.speedup, args.volume, args.image, run_dir, f"sitl-runs-{i}", script=args.flight,
+                 timeout=args.timeout)
         logs = sorted((run_dir / "logs").glob("*.BIN"), key=lambda p: p.stat().st_size, reverse=True)
         if ok and logs:
             shutil.copy(logs[0], args.out / f"run{i:02d}.BIN")

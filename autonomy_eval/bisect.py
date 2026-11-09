@@ -98,15 +98,20 @@ def localize(metric: str, base: str, head: str) -> Bisection | None:
     if len(commits) > MAX_COMMITS:
         b.error = f"{len(commits)} commits in range, too many to check individually"
         return b
+    failed = 0
     for c in commits:
         try:
             detail = _get(f"https://api.github.com/repos/{REPO}/commits/{c['sha']}")
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            continue  # one failed lookup shouldn't lose the others
+            failed += 1          # a failed lookup must not look like "no suspects"
+            continue
         files = [f["filename"] for f in detail.get("files", [])]
         if any(f.startswith(d) for f in files for d in dirs):
             b.suspects.append(SuspectCommit(c["sha"][:8], c["commit"]["message"].splitlines()[0],
                                              [f for f in files if any(f.startswith(d) for d in dirs)]))
+    if failed:
+        b.error = (f"{failed} of {len(commits)} commit lookups failed (GitHub rate limit is 60 per hour "
+                   f"unauthenticated); the suspect list is incomplete")
     return b
 
 

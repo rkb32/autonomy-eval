@@ -53,15 +53,27 @@ def upload_mission(m, points):
     for lat, lon in points:
         items.append((mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, lat, lon, ALT, mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT))
     items.append((mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0, 0, 0, mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT))
-    m.mav.mission_count_send(m.target_system, m.target_component, len(items), mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
+    kinds = ["MISSION_REQUEST_INT", "MISSION_REQUEST"]
+    # SITL ignores mission uploads for its first few seconds (warm-up), so resend the count until it asks.
+    t0 = time.time()
+    req = None
+    while req is None:
+        m.mav.mission_count_send(m.target_system, m.target_component, len(items), mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
+        try:
+            req = wait_msg(m, kinds, 5)
+        except TimeoutError:
+            if time.time() - t0 > 90:
+                raise TimeoutError("autopilot never asked for mission items within 90 s")
     sent = set()
-    while len(sent) < len(items):
-        req = wait_msg(m, ["MISSION_REQUEST_INT", "MISSION_REQUEST"], 10)
+    while True:
         i = req.seq
         cmd, lat, lon, alt, frame = items[i]
         m.mav.mission_item_int_send(m.target_system, m.target_component, i, frame, cmd, 0, 1, 0, 0, 0, 0,
                                     int(lat * 1e7), int(lon * 1e7), alt, mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
         sent.add(i)
+        if len(sent) == len(items):
+            break
+        req = wait_msg(m, kinds, 10)
     ack = wait_msg(m, "MISSION_ACK", 10)
     if ack.type != mavutil.mavlink.MAV_MISSION_ACCEPTED:
         raise RuntimeError(f"mission rejected: {ack.type}")
@@ -114,17 +126,30 @@ def main():
 
     t0 = time.time()
     last_seq = -1
+    landed_since = None
     while time.time() - t0 < args.timeout:
         heartbeat(m)
-        msg = m.recv_match(type=["MISSION_ITEM_REACHED", "HEARTBEAT"], blocking=True, timeout=2)
+        msg = m.recv_match(type=["MISSION_ITEM_REACHED", "HEARTBEAT", "GLOBAL_POSITION_INT"], blocking=True, timeout=2)
         if msg is None:
             continue
-        if msg.get_type() == "MISSION_ITEM_REACHED" and msg.seq != last_seq:
+        kind = msg.get_type()
+        if kind == "MISSION_ITEM_REACHED" and msg.seq != last_seq:
             last_seq = msg.seq
             print("reached item", msg.seq, flush=True)
-        if msg.get_type() == "HEARTBEAT" and last_seq >= 1 and not (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED):
+        if kind == "HEARTBEAT" and last_seq >= 1 and not (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED):
             print("disarmed, flight done", flush=True)
             return 0
+        # SITL can land and stay armed, so no disarm ever comes. EXTENDED_SYS_STATE never arrives on this
+        # stream, so use altitude: under 0.5 m above home for 15 s after the mission has started.
+        if kind == "GLOBAL_POSITION_INT" and last_seq >= 2:
+            if msg.relative_alt < 500:                      # mm
+                if landed_since is None:
+                    landed_since = time.time()
+                elif time.time() - landed_since > 15:
+                    print("landed, not disarmed; flight done", flush=True)
+                    return 0
+            else:
+                landed_since = None
     print("timed out", flush=True)
     return 1
 
