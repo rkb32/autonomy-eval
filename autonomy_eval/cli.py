@@ -148,6 +148,9 @@ def cmd_sysid_check(args) -> int:
     paths = [args.log, *args.baseline]
     with ProcessPoolExecutor() as pool:
         flights = list(pool.map(_margin_flight, paths))
+    if all(f.metrics.get("margin_unmeasurable") == 1.0 for f in flights):
+        print("error: no SystemID chirp with usable margins in any of these flights", file=sys.stderr)
+        return 2
     candidate, *baseline = flights
     result = compare(candidate, baseline)     # unmeasurable margins are a flagged metric, not an error
     if args.json:

@@ -66,6 +66,8 @@ def run_check(kind: str, candidate: str, baseline: list[str], triage: bool = Fal
             if not f.metrics:
                 return CheckOutcome(error=f"{_NO_DATA[kind]} {f.source}")
     cand, *base = flights
+    if kind == "sysid" and all(f.metrics.get("margin_unmeasurable") == 1.0 for f in flights):
+        return CheckOutcome(error="no SystemID chirp with usable margins in any of these flights")
     if kind == "nees":
         missing = _missing_in_candidate(cand, base)
         if missing:
