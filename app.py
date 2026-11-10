@@ -114,7 +114,7 @@ STYLE = """
 
 @media (max-width: 640px) {
   [data-testid="stMainBlockContainer"] { padding-left: 1rem; padding-right: 1rem; padding-top: 3.25rem; }
-  [data-testid="stTabs"] [data-baseweb="tab-list"] { gap: 1.1rem; }
+  [data-testid="stTabs"] [data-baseweb="tab-list"], [data-testid="stTabs"] [role="tablist"] { gap: 1.1rem; }
   .ae-stat { min-width: 0; flex: 1 1 40%; }
 }
 </style>
@@ -230,7 +230,7 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         return
     if c.findings:
         st.dataframe(pd.DataFrame([{
-            "": {"worse": "🔴 worse", "better": "🟢 better", "changed": "🟠 changed"}[f.verdict],
+            "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
             "what": label(f.metric),
             "this run": f.value,
             "normal (median)": f.median,
@@ -249,6 +249,12 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
                 "\n".join(f"- {m}" for m in c.missing_messages))
     if cand.source.startswith("http"):
         st.caption(f"Raw log: {cand.source}")
+
+
+@st.cache_data(show_spinner=False)
+def cached_sample(kind: str) -> CheckOutcome:
+    """Each visitor shares the result: the slow check runs once per sample, not once per visit."""
+    return run_sample(kind)
 
 
 def show_triage(verdict: str, items: list[str]) -> None:
@@ -277,7 +283,7 @@ def show_check(outcome: CheckOutcome, kind: str) -> None:
         show_triage(*outcome.triage)
     if c.findings:
         st.dataframe(pd.DataFrame([{
-            "": {"worse": "🔴 worse", "better": "🟢 better", "changed": "🟠 changed"}[f.verdict],
+            "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
             "what": label(f.metric),
             "this run": f.value,
             "normal (median)": f.median,
@@ -363,6 +369,8 @@ with tab_upload:
         "the upload right before it and itself."
     )
     files = st.file_uploader("Flight logs", type=["tlog", "bin", "json"], accept_multiple_files=True)
+    if not files:
+        st.info("No logs yet? The Real ArduPilot CI result tab shows the same comparison on real build history.")
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):
         runs, failed = [], []
         progress = st.progress(0.0, text="Reading logs...")
@@ -382,9 +390,12 @@ with tab_upload:
                         runs.append(s)
                 progress.progress((i + 1) / len(files), text=f"Read {f.name}")
         progress.empty()
+        st.caption(f"Read {len(runs)} of {len(files)} file(s)" + (f"; {len(failed)} could not be read." if failed else "."))
         for msg in failed:
             st.warning(f"Could not read {msg}")
         st.session_state["uploaded_runs"] = runs
+    if not files:
+        st.session_state.pop("uploaded_runs", None)   # cleared files must clear the old results too
     runs = st.session_state.get("uploaded_runs", [])
     groups: dict[tuple, list[FlightSummary]] = {}
     for r in runs:
@@ -397,7 +408,7 @@ with tab_upload:
         results_section(group, key=f"upload-{vehicle}-{mav_type}")
 
 with tab_checks:
-    st.markdown(
+    st.container(key="ae-intro-checks").markdown(
         "The stability and estimator checks from the command line, on your own flights. They read raw "
         "DataFlash `.bin` logs, not summaries, and each needs a flight made for it: a SystemID chirp for "
         "stability margins, a SITL run that records ground truth for the estimator check, or GUIDED "
@@ -408,19 +419,17 @@ with tab_checks:
     st.markdown("**Or try a sample flight** (SITL flights with a known fault). The stability sample is about "
                 "300 MB in total (four files of about 75 MB each), so its first run takes a while; the samples are "
                 "downloaded once and then reused.")
-    sample_cols = st.columns(3)
-    for col, (sample_kind, sample_label) in zip(sample_cols, [("sysid", "Stability margins"),
-                                                             ("nees", "Estimator consistency"),
-                                                             ("step", "Step response")]):
-        if col.button(f"Run {sample_label.lower()} sample", key=f"chk-sample-{sample_kind}",
-                      use_container_width=True):
-            with st.spinner("Downloading and checking the sample flights..."):
+    for sample_kind, sample_label in [("sysid", "Stability margins"), ("nees", "Estimator consistency"),
+                                      ("step", "Step response")]:
+        if st.button(f"Run {sample_label.lower()} sample", key=f"chk-sample-{sample_kind}"):
+            wait = ("Downloading about 300 MB, first run only..." if sample_kind == "sysid"
+                    else "Downloading the sample flights, first run only...")
+            with st.spinner(wait):
                 try:
-                    sample_outcome = run_sample(sample_kind)
+                    st.session_state[f"chk-result-{sample_kind}"] = cached_sample(sample_kind)
                 except Exception as e:  # no network, or a bad download, should not take the page down
-                    sample_outcome = CheckOutcome(error=f"Could not load the sample flights: {e}")
-            st.session_state[f"chk-result-{sample_kind}"] = sample_outcome
-    for sample_kind in ("sysid", "nees", "step"):
+                    st.session_state[f"chk-result-{sample_kind}"] = CheckOutcome(
+                        error=f"Could not load the sample flights: {e}")
         if f"chk-result-{sample_kind}" in st.session_state:
             st.markdown(f"**Sample: {CHECKS[sample_kind][0]}**")
             show_check(st.session_state[f"chk-result-{sample_kind}"], sample_kind)
