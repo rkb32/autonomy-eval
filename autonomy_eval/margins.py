@@ -152,7 +152,7 @@ def unmeasured_margin_bound(f, L):
 
 
 def margin_note(path: str | Path) -> str | None:
-    """One line for the web page: why a SystemID flight's margins could not be measured, if the data says."""
+    """One line for the reports (web page and CLI): why a SystemID flight's margins could not be measured, if the data says."""
     loop = _open_loop(path)
     if loop is None:
         return None

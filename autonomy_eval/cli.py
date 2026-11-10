@@ -145,18 +145,21 @@ def _missing_in_candidate(candidate: FlightSummary, baseline: list[FlightSummary
 
 
 def cmd_sysid_check(args) -> int:
-    paths = [args.log, *args.baseline]
+    from .checks import run_check   # local import: checks.py imports this module
     with ProcessPoolExecutor() as pool:
-        flights = list(pool.map(_margin_flight, paths))
-    if all(f.metrics.get("margin_unmeasurable") == 1.0 for f in flights):
-        print("error: no SystemID chirp with usable margins in any of these flights", file=sys.stderr)
+        outcome = run_check("sysid", args.log, args.baseline, executor=pool)
+    if outcome.error:
+        print(f"error: {outcome.error}", file=sys.stderr)
         return 2
-    candidate, *baseline = flights
-    result = compare(candidate, baseline)     # unmeasurable margins are a flagged metric, not an error
+    result = outcome.comparison     # unmeasurable margins are a flagged metric, not an error
     if args.json:
-        print(json.dumps(to_dict(result), indent=1))
+        out = to_dict(result)
+        out["note"] = outcome.note
+        print(json.dumps(out, indent=1))
     else:
         print(render(result))
+        if outcome.note:
+            print(outcome.note)
     return 1 if result.failed else 0
 
 

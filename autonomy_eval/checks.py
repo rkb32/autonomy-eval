@@ -71,10 +71,14 @@ class CheckOutcome:
     note: str | None = None                        # sysid only: how far the margins can be bounded, if not measured
 
 
-def run_check(kind: str, candidate: str, baseline: list[str], triage: bool = False) -> CheckOutcome:
-    """Run one check on a candidate .bin against earlier .bin flights of the same mission."""
+def run_check(kind: str, candidate: str, baseline: list[str], triage: bool = False, executor=None) -> CheckOutcome:
+    """Run one check on a candidate .bin against earlier .bin flights of the same mission.
+
+    An executor (e.g. a ProcessPoolExecutor) reads the flights in parallel; without one they are read in turn.
+    """
     try:
-        flights = [_BUILDERS[kind](p) for p in [candidate, *baseline]]
+        paths = [candidate, *baseline]
+        flights = list(executor.map(_BUILDERS[kind], paths)) if executor else [_BUILDERS[kind](p) for p in paths]
     except ImportError as e:   # the stability check needs scipy (the [sysid] extra)
         return CheckOutcome(error=f"this check needs an extra package: {e.name or e}. Install it and reload.")
     if _NO_DATA[kind]:
