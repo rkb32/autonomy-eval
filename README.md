@@ -109,17 +109,35 @@ fault level with one parameter changed. `scripts/sitl_runs.py` + `scripts/fault_
 | weak position gain (`PSC_POSXY_P` 0.6 / 0.35 / 0.2) | 9 | **9/9** (position error metrics) |
 | wind (`SIM_WIND_SPD` 2 / 5 / 8 m/s) | 9 | 6/9 — 2 m/s sits under the 0.1 m reporting floor, by design |
 | high roll-rate gain (`ATC_RAT_RLL_P` 0.25 / 0.4 / 0.6) | 9 | 3/9 — only 0.6; the 0.4 signal (attitude error +57%) sits under absolute floors set for real hardware |
-| accelerometer noise (`SIM_ACC1_RND` 1.5 / 4 / 10) | 9 | 0/9 — SITL's `VIBE` message isn't driven by injected noise; vibration faults need real hardware |
+| vibration (`SIM_ACC1_RND` 1.5 / 4 / 10, with `SIM_VIB_FREQ_X/Y/Z` = 100 Hz) | 9 | **9/9** (`VIBE` p95: 0.049 at baseline, 1.10 / 2.92 / 7.30 at the three levels) |
 | baseline checked against itself (leave-one-out) | 8 | **0 false alarms** |
+
+The vibration row needs a static vibration frequency. `SIM_ACC1_RND` only scales the vibration sine;
+without `SIM_VIB_FREQ_*` it adds nothing, which is why an earlier version of this benchmark showed 0/9.
+
+### Step response, stability margins and estimator consistency (SystemID and GPS-noise flights)
+
+| check | what it measures | result |
+|---|---|---|
+| step response (`step-check`) | overshoot, settling time, steady-state error of GUIDED position steps | **0/15** detected across `PSC_POSXY_P` 0.2–2.0. Steady-state error is the only metric that moves with gain, and it stays under the 0.1 m floor until gain 0.2. Now **information only**: `step-check` always exits 0. |
+| stability margins (`sysid-check`) | gain and phase margin of the roll-rate loop from a SystemID chirp | baseline (4 flights): phase margin 38–41°, gain margin 9.0–9.3 dB. Roll gain 0.4 (3 flights): gain margin about 0 dB, phase margin about −92°. **3/3** flagged, 0 false alarms. |
+| estimator consistency (`nees-check`) | EKF normalized estimation error (NEES) against SITL truth, core 0 only | 0 false alarms in leave-one-out. Did **not** detect the altitude-sinusoid fault at 2 m or 4 m (0/3 each): vertical NEES stays at about 0.10 in every flight. Horizontal NEES is noisy (0.1–0.8 at baseline). An earlier version reported detection, but it mixed in a second EKF core and was wrong. |
+| innovation health (`nees-check`, same flights) | p95 of the EKF's innovations (measurement minus prediction) | 0 false alarms. Did **not** detect the altitude-sinusoid fault at 2 m or 4 m (0/3 each). |
+
+The step-response gate was built to catch controller-gain changes, and at the floors above it caught none
+of the 15 faulted flights. The position-error gate already catches weak position gain (9/9, above), so the
+step metrics are reported for information only. Lowering the steady-state floor to 0.05 m would catch gain
+0.2; that is one fault level, so the floor was not changed.
 
 ## Web demo
 
 ```bash
-pip install -e ".[demo]" && streamlit run app.py
+pip install -e ".[demo,sysid]" && streamlit run app.py
 ```
 
-Three tabs: the CI result above with a chart of each metric across builds, an upload box for your
-own `.tlog` / `.bin` logs, and the cross-format check below. It runs the same code as the CLI.
+Four tabs: the CI result above with a chart of each metric across builds, an upload box for your
+own `.tlog` / `.bin` logs, the stability and estimator checks (`sysid-check`, `nees-check`, `step-check`,
+and triage) on your own `.bin` logs or on sample flights from the [sample-logs-v1 release](https://github.com/rkb32/autonomy-eval/releases/tag/sample-logs-v1), and the cross-format check. It runs the same code as the CLI.
 
 ## Run it
 
@@ -128,6 +146,10 @@ python -m venv .venv && .venv/Scripts/activate        # or: source .venv/bin/act
 pip install -e ".[dev]"
 
 autonomy-eval scan examples/*/*.json                   # reproduce the result above (no download)
+autonomy-eval sysid-check NEW.bin --baseline OLD.bin ...   # stability margins of a SystemID chirp (pip install -e ".[sysid]")
+autonomy-eval nees-check NEW.bin --baseline OLD.bin ...    # EKF consistency against SITL truth (SIM2 logs)
+autonomy-eval step-check NEW.bin --baseline OLD.bin ...    # step response; information only, always exits 0
+autonomy-eval triage LOG --baseline PASS.bin ...           # one flagged item = possible; two or more = likely real
 autonomy-eval check NEW.tlog --baseline OLD1.tlog OLD2.tlog OLD3.tlog ...
 autonomy-eval summarize flight.tlog -o flight.json     # save a summary to reuse as baseline
 ```
@@ -235,9 +257,30 @@ written.
   quieter (vibration floor 1.0 m/s/s vs a SITL baseline of 0.05), so mild simulated faults can sit
   under them — that's why the 0.4 roll-gain level isn't flagged. Whether floors should scale with
   the baseline is an open design question.
-- **Vibration faults can't be benchmarked in SITL**: neither accelerometer noise
-  (`SIM_ACC1_RND`) nor motor vibration (`SIM_VIB_MOT_MAX` + `SIM_VIB_MOT_MASK`) moves the `VIBE`
-  metric there — the simulated vehicle has no frame resonance to shake. That row needs real logs.
+- **Motor vibration is not benchmarked.** The accelerometer row (table above) reproduces: with `SIM_VIB_FREQ_X/Y/Z=100`,
+  `SIM_ACC1_RND` 1.5, 4 and 10 give vibration p95 1.1, 2.92–2.93 and 7.31–7.32 m/s/s over 3 runs each, matching the 1.10, 2.92 and 7.30 in the table. The v2 batch set
+  `SIM_VIB_MOT_MAX=100` without the frequency instead, and gave different values: 7.1–9.3 at `SIM_ACC1_RND=4` (3 runs: 9.32, 9.10, 7.14) and 16.8–23.5
+  at `SIM_ACC1_RND=10` (3 runs: 23.52, 20.86, 16.76). A landing-end rerun gave 7.7–9.7 at 4 and 18.1–23.8 at 10. The motor 1.5 level gave 2.93–3.22 over 3 runs. So the motor batch measures a different
+  signal, and its real-world fidelity is unverified. The 1.5 flights ended at the landing timeout without disarming. The 4 and 10 batches, old and rerun,
+  all logged LAND_COMPLETE and disarmed about 0.5 s later, so their endings match.
+  At motor 1.5 with `EK3_IMU_MASK=2` (EKF uses IMU1 only), 3 of 3 runs logged LAND_COMPLETE and disarmed 0.5 s later. The unmasked 1.5 flights (`EK3_IMU_MASK=3`, same sim parameters, 3 runs) never disarmed, and none logged LAND_COMPLETE (one logged LAND_MAYBE). That fits a lane-switch explanation, but the mechanism is not proven. The mask runs' vibration (3.47, 3.11, 3.11) is left out of the table because the mask changes the estimator's input.
+- **Stability-margin floors are a guess.** The 5° phase-margin and 1 dB gain-margin floors come from one
+  fault level and four baseline flights. They are not validated against other faults.
+- **The margin is of the attitude cascade at the SystemID injection point, not of the rate loop alone.** ArduCopter
+  adds the chirp to the rate target after the angle controller (`libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.cpp:453`),
+  so the angle loop's feedback is inside the measured response. Angle feedback matters most at low frequency, so
+  the crossover estimate is closest to the rate loop. A pure rate-loop margin would need the angle loop disabled,
+  which this check does not do. The phase is anchored at its lowest-frequency value (the principal angle).
+- **Estimator checks did not catch the fault we injected, and that fault was mislabelled.** `SIM_GPS_NOISE` adds a
+  vertical sinusoid to the simulated GPS altitude only (`libraries/SITL/SIM_GPS.cpp:367`), not horizontal noise.
+  Neither NEES nor innovation health flagged it at 2 m or 4 m. Horizontal GPS velocity error (`SIM_GPS_VERR_X=1`
+  and `SIM_GPS_VERR_Y=1`) is flagged by `check` in all 3 runs, and again on the landing-end script (velocity variance p95 0.33 vs 0.02). `nees-check` on run 1 shows velocity NEES 1.85 and 1.32
+  vs baseline 0.10 and 0.06, and velocity innovation p95 0.73 vs 0.04. Baseline false-alarm rate, leave-one-out on the 6 landing-end baseline flights (`v6-base`): `ekf_vel_var_p95` is 0.02 in every run, and `check` flags 0 of 6 (all metrics within the normal range). That is 0/6, which bounds the rate only loosely: 95% upper bound about 39%. A single-metric flag from `triage`
+  is reported as "possible", not as a real regression.
+- **Unmeasurable margins count as a regression.** If the loop has no usable crossover (coherence falls below 0.6
+  near instability), `sysid-check` flags `margin_unmeasurable` and fails. Roll gain 0.4 is flagged this way, not
+  by a measured negative margin.
+- **Step-response gate is information only** (see the table above). Its steady-state floor was not tuned.
 - Vehicle type for `.bin` logs is mapped from `FRAME_CLASS` for Rover and Copter frames only.
 - `--bisect` only works when build labels are real ArduPilot git SHAs (not e.g. `.json` summaries
   saved under your own filenames), and matches commits by source directory, which can name a file

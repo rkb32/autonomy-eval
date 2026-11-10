@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Iterable
 
@@ -29,8 +29,13 @@ WORSE_IF_HIGHER = {
     "ekf_pos_horiz_var_p95", "ekf_pos_vert_var_p95", "ekf_compass_var_p95", "vibe_p95",
     "clip_total", "gps_hdop_p95", "errors", "warnings", "reboots",
     "pos_err_mean_m", "pos_err_p95_m", "att_err_p95_deg",
+    "step_overshoot_max_pct", "step_settle_max_s", "step_ss_err_max_m",
+    "nees_pos_n", "nees_pos_e", "nees_pos_d", "nees_vel_n", "nees_vel_e", "nees_vel_d",
+    "innov_vn_p95", "innov_ve_p95", "innov_vd_p95", "innov_pn_p95", "innov_pe_p95", "innov_pd_p95",
+    "margin_unmeasurable",
 }
-WORSE_IF_LOWER = {"missions_completed", "waypoints_reached", "gps_sats_min", "batt_min_v"}
+WORSE_IF_LOWER = {"missions_completed", "waypoints_reached", "gps_sats_min", "batt_min_v",
+                  "margin_pm_deg", "margin_gm_db"}
 
 
 @dataclass
@@ -55,7 +60,24 @@ class FlightSummary:
 
     @classmethod
     def from_json(cls, text: str) -> "FlightSummary":
-        return cls(**json.loads(text))
+        """Load a saved summary. Refuses unknown keys and wrong types instead of crashing later in compare()."""
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            raise ValueError("summary JSON must be an object")
+        known = {f.name for f in fields(cls)}
+        unknown = sorted(set(data) - known)
+        if unknown:
+            raise ValueError(f"summary JSON has unknown fields: {', '.join(unknown)}")
+        if "source" not in data:
+            raise ValueError("summary JSON has no 'source' field")
+        for name in ("metrics", "params", "quality"):
+            value = data.get(name, {})
+            if not isinstance(value, dict):
+                raise ValueError(f"summary field '{name}' must be an object")
+        for k, v in data.get("metrics", {}).items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise ValueError(f"metric '{k}' must be a number, got {type(v).__name__}")
+        return cls(**data)
 
 
 def normalize_event(text: str) -> str:

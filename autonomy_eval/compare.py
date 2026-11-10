@@ -55,6 +55,20 @@ MIN_EFFECT = {
     "ekf_compass_var_p95": 0.05,
     "gps_hdop_p95": 0.25,
     "batt_min_v": 0.1,
+    # Step response (stepresp.py). Overshoot: 5 points of the step size; settling: a second; error: 10 cm.
+    "step_overshoot_max_pct": 5.0,
+    "step_settle_max_s": 1.0,
+    "step_ss_err_max_m": 0.1,
+    # Stability margins (margins.py): 5 degrees of phase margin, 1 dB of gain margin.
+    "margin_pm_deg": 5.0,
+    "margin_gm_db": 1.0,
+    "margin_unmeasurable": 0.5,   # 1 = no usable crossover: a loop that close to instability is a regression
+    # Estimator consistency (nees.py): a consistent filter averages 1; a rise of 0.2 is worth a look.
+    "nees_pos_n": 0.2, "nees_pos_e": 0.2, "nees_pos_d": 0.2,
+    "nees_vel_n": 0.2, "nees_vel_e": 0.2, "nees_vel_d": 0.2,
+    # EKF innovations (ekf_health.py): 0.2 m/s for velocity, 0.5 m for position.
+    "innov_vn_p95": 0.2, "innov_ve_p95": 0.2, "innov_vd_p95": 0.2,
+    "innov_pn_p95": 0.5, "innov_pe_p95": 0.5, "innov_pd_p95": 0.5,
 }
 
 

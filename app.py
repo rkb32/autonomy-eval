@@ -1,4 +1,4 @@
-"""Web demo: the CI result, a way to try your own logs, and the cross-format check.
+"""Web demo: the CI result, a way to try your own logs, the stability and estimator checks, and the cross-format check.
 
     streamlit run app.py
 """
@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from autonomy_eval import bisect as bisect_mod
+from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
 from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
@@ -26,6 +27,100 @@ HISTORIES = {
 STATUS_COLORS = {"REGRESSED": "#d62728", "changed": "#ff9f1c", "ok": "#9aa0a6"}
 
 st.set_page_config(page_title="autonomy-eval", page_icon="🛰️", layout="wide")
+
+# Visual layer only. Colors that must work in light and dark mode are derived from the current text
+# color (currentColor / color-mix), so they flip with the theme instead of being hard-coded per mode.
+STYLE = """
+<style>
+:root { --ae-red: #d62728;
+  --ae-gh: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.22 1.88.87 2.34.66.07-.52.28-.87.51-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z'/%3E%3C/svg%3E");
+  --ae-serif: "Source Serif", ui-serif, Georgia, serif; }
+[data-testid="stMainBlockContainer"] { max-width: 1120px; padding-top: 2.5rem; padding-bottom: 4rem; }
+
+/* hero */
+.ae-hero { padding: 0.5rem 0 1.75rem; margin-bottom: 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+.ae-hero h1 { font-family: var(--ae-serif); font-weight: 600; font-size: clamp(2.4rem, 6vw, 3.6rem);
+  letter-spacing: -0.025em; line-height: 1.05; margin: 0 0 1rem; padding: 0; }
+.ae-lede { font-family: var(--ae-serif); font-size: clamp(1.1rem, 2.2vw, 1.32rem); line-height: 1.55;
+  max-width: 46rem; margin: 0 0 1.4rem; opacity: 0.92; }
+.ae-lede strong { color: var(--ae-red); font-weight: 600; }
+.ae-cta { display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.5rem 0.95rem; border-radius: 0.5rem;
+  font-size: 0.92rem; font-weight: 600; text-decoration: none !important; color: inherit !important;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent); transition: border-color .15s, background .15s; }
+.ae-cta:hover { border-color: var(--ae-red); background: color-mix(in srgb, var(--ae-red) 8%, transparent); }
+.ae-cta::before { content: ""; width: 16px; height: 16px; background: currentColor;
+  -webkit-mask: var(--ae-gh) center / contain no-repeat; mask: var(--ae-gh) center / contain no-repeat; }
+
+/* tabs */
+[data-testid="stTabs"] [role="tablist"] { gap: 1.75rem; overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
+[data-testid="stTab"] { padding: 0.85rem 0 0.75rem; height: auto; background: transparent; }
+[data-testid="stTab"] p { font-size: 1rem !important; font-weight: 600; opacity: 0.6; white-space: nowrap; }
+[data-testid="stTab"]:hover p, [data-testid="stTab"][aria-selected="true"] p { opacity: 1; }
+[data-testid="stTabs"] [role="tabpanel"] { padding-top: 1.6rem; }
+
+/* tab intro paragraphs */
+[class*="st-key-ae-intro"] p { font-size: 1.04rem; line-height: 1.65; max-width: 48rem; opacity: 0.85; }
+
+/* widget labels read as section headings */
+[data-testid="stSelectbox"] label p, [data-testid="stFileUploader"] label p {
+  font-family: var(--ae-serif); font-size: 1.2rem; font-weight: 600; opacity: 1; }
+[data-testid="stSelectbox"] { padding-top: 1.4rem; margin-top: 0.6rem;
+  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent); }
+[data-testid="stSelectbox"] > div:last-child { max-width: 26rem; }
+
+/* history switch as a segmented control */
+[class*="st-key-ae-history"] [role="radiogroup"] { gap: 0.5rem; flex-wrap: wrap; }
+[class*="st-key-ae-history"] [role="radiogroup"] label { margin: 0; padding: 0.35rem 0.85rem; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent); }
+[class*="st-key-ae-history"] [role="radiogroup"] label:has(input:checked) {
+  border-color: var(--ae-red); background: color-mix(in srgb, var(--ae-red) 8%, transparent); }
+
+/* result summary */
+.ae-summary { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0.25rem 0 0.9rem; }
+.ae-stat { display: flex; align-items: baseline; gap: 0.45rem; padding: 0.55rem 0.9rem; border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent); min-width: 7.5rem; }
+.ae-stat b { font-family: var(--ae-serif); font-size: 1.5rem; font-weight: 600; line-height: 1; }
+.ae-stat span { font-size: 0.82rem; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.7; }
+.ae-stat.bad { border-color: color-mix(in srgb, var(--ae-red) 55%, transparent);
+  background: color-mix(in srgb, var(--ae-red) 7%, transparent); }
+.ae-stat.bad b { color: var(--ae-red); }
+.ae-stat.warn b { color: #e08600; }
+
+/* dataframes */
+[data-testid="stDataFrame"] { border-radius: 0.5rem; overflow: hidden; }
+
+/* alerts: hairline card with a colored left rule instead of a filled block */
+[data-testid="stAlertContainer"] { background: color-mix(in srgb, currentColor 3%, transparent) !important;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent); border-left-width: 3px; border-radius: 0.5rem; }
+[data-testid="stAlertContentError"], [data-testid="stAlertContentWarning"],
+[data-testid="stAlertContentInfo"], [data-testid="stAlertContentSuccess"] { color: inherit; }
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) { border-left-color: var(--ae-red); }
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) { border-left-color: #e08600; }
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) { border-left-color: #9aa0a6; }
+[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) { border-left-color: #2f9e6a; }
+
+/* uploader as an obvious empty state */
+[data-testid="stFileUploaderDropzone"] { border: 1.5px dashed color-mix(in srgb, currentColor 32%, transparent);
+  background: transparent; padding: 1.6rem 1.25rem; }
+[data-testid="stFileUploaderDropzone"]:hover { border-color: var(--ae-red); }
+
+/* closing notes under each tab */
+[class*="st-key-ae-note"] { margin-top: 1.25rem; padding: 1rem 1.2rem; border-radius: 0.5rem;
+  border: 1px solid color-mix(in srgb, currentColor 12%, transparent); border-left: 3px solid #9aa0a6; }
+.st-key-ae-note-boat { border-left-color: var(--ae-red) !important; }
+[class*="st-key-ae-note"] p { line-height: 1.65; margin: 0; }
+
+@media (max-width: 640px) {
+  [data-testid="stMainBlockContainer"] { padding-left: 1rem; padding-right: 1rem; padding-top: 3.25rem; }
+  [data-testid="stTabs"] [data-baseweb="tab-list"], [data-testid="stTabs"] [role="tablist"] { gap: 1.1rem; }
+  [data-testid="stTabs"] [role="tablist"] { flex-wrap: wrap; row-gap: 0.25rem; overflow: visible; }
+  .ae-stat { min-width: 0; flex: 1 1 40%; }
+}
+</style>
+"""
+st.html(STYLE)
 
 
 def label(metric: str) -> str:
@@ -136,7 +231,7 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         return
     if c.findings:
         st.dataframe(pd.DataFrame([{
-            "": {"worse": "🔴 worse", "better": "🟢 better", "changed": "🟠 changed"}[f.verdict],
+            "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
             "what": label(f.metric),
             "this run": f.value,
             "normal (median)": f.median,
@@ -157,9 +252,62 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         st.caption(f"Raw log: {cand.source}")
 
 
+@st.cache_data(show_spinner=False)
+def cached_sample(kind: str) -> CheckOutcome:
+    """Each visitor shares the result: the slow check runs once per sample, not once per visit."""
+    return run_sample(kind)
+
+
+def show_triage(verdict: str, items: list[str]) -> None:
+    if verdict == "LIKELY REAL":
+        st.error(f"Triage: likely real. Outside the baseline spread on: {', '.join(items)}")
+    elif verdict == "POSSIBLE":
+        st.warning(f"Triage: possible, not confirmed. Only {items[0]} is outside the spread. "
+                   "One item is usually noise; rerun before treating it as real.")
+    else:
+        st.success("Triage: within noise. The run matches the baseline spread.")
+
+
+def show_check(outcome: CheckOutcome, kind: str) -> None:
+    if outcome.error:
+        st.error(outcome.error)
+        return
+    c = outcome.comparison
+    st.markdown(f"**{c.candidate.label}**, compared against {len(c.baseline)} earlier flight(s)")
+    if kind == "step":
+        st.info("Information only: step metrics never fail a build.")
+    elif c.failed:
+        st.error("Regression: outside the normal range of the earlier flights.")
+    else:
+        st.success("No regressions: within the normal range of the earlier flights.")
+    if outcome.triage:
+        show_triage(*outcome.triage)
+    if outcome.note:
+        st.caption(outcome.note)
+    if c.findings:
+        st.dataframe(pd.DataFrame([{
+            "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
+            "what": label(f.metric),
+            "this run": f.value,
+            "normal (median)": f.median,
+            "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
+        } for f in c.findings]), hide_index=True, use_container_width=True)
+    for w in c.warnings:
+        st.caption(f"note: {w}")
+
+
 def results_section(runs: list[FlightSummary], key: str, default_metric: str | None = None) -> None:
     results = scan(runs)
     df = scan_table(results)
+    counts = {s: sum(status(c) == s for c in results) for s in ("REGRESSED", "changed", "ok")}
+    st.html(
+        '<div class="ae-summary">'
+        f'<div class="ae-stat"><b>{len(results)}</b><span>runs</span></div>'
+        f'<div class="ae-stat{" bad" if counts["REGRESSED"] else ""}"><b>{counts["REGRESSED"]}</b><span>regressed</span></div>'
+        f'<div class="ae-stat{" warn" if counts["changed"] else ""}"><b>{counts["changed"]}</b><span>changed</span></div>'
+        f'<div class="ae-stat"><b>{counts["ok"]}</b><span>ok</span></div>'
+        '</div>'
+    )
     st.dataframe(
         df.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600", subset=["status"]),
         hide_index=True, use_container_width=True,
@@ -176,26 +324,31 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
     show_detail(next(c for c in results if c.candidate.label == choice), runs)
 
 
-st.title("autonomy-eval")
-st.markdown(
-    "Catches **flight regressions**: compares a test flight's log against earlier flights of the same "
-    "vehicle and reports what got worse than normal. Existing ArduPilot log tools look at one flight at "
-    f"a time; this answers *did this build fly worse than the last ones did?* [Code on GitHub]({REPO})"
+st.html(
+    '<header class="ae-hero">'
+    '<h1>autonomy-eval</h1>'
+    '<p class="ae-lede">Catches <strong>flight regressions</strong>: compares a test flight\'s log against earlier '
+    "flights of the same vehicle and reports what got worse than normal. Existing ArduPilot log tools look at one "
+    "flight at a time; this answers <em>did this build fly worse than the last ones did?</em></p>"
+    f'<a class="ae-cta" href="{REPO}" target="_blank" rel="noopener">Code on GitHub</a>'
+    "</header>"
 )
 
-tab_ci, tab_upload, tab_formats = st.tabs(["Real ArduPilot CI result", "Try your own logs", "Same flight, two formats"])
+tab_ci, tab_upload, tab_checks, tab_formats = st.tabs(
+    ["Real ArduPilot CI result", "Try your own logs", "Stability and estimator checks", "Same flight, two formats"])
 
 with tab_ci:
-    st.markdown(
+    st.container(key="ae-intro-ci").markdown(
         "ArduPilot's CI reruns the same test missions on every firmware build and publishes the "
         "telemetry. Each build below is compared against the other seven."
     )
-    history = st.radio("History", list(HISTORIES), horizontal=True, label_visibility="collapsed")
+    history = st.container(key="ae-history").radio(
+        "History", list(HISTORIES), horizontal=True, label_visibility="collapsed")
     folder = HISTORIES[history]
     results_section(load_history(folder), key=folder,
                     default_metric="armed_time_s" if folder == "ardurover-surface-boat" else None)
     if folder == "ardurover-surface-boat":
-        st.markdown(
+        st.container(key="ae-note-boat").markdown(
             "**What happened in build bf080274:** the boat tacked one extra time, which alone explains "
             "the 13 extra seconds and the worse tracking. \"Possible cause\" above (found automatically, "
             "not written by hand) agrees: the one commit it flags only relocates a parameter table, not "
@@ -203,14 +356,14 @@ with tab_ci:
             "flaky test, not a firmware bug. Knowing which is the point."
         )
     else:
-        st.markdown(
+        st.container(key="ae-note-rover").markdown(
             "No build regressed. This history was held out while the rules were developed; the first "
             "run on it produced two false alarms, which were fixed "
             f"([before and after]({REPO}#honest-results))."
         )
 
 with tab_upload:
-    st.markdown(
+    st.container(key="ae-intro-upload").markdown(
         f"Upload at least {MIN_BASELINE + 1} logs of the **same vehicle and mission**: MAVLink telemetry "
         "(`.tlog`), ArduPilot DataFlash (`.bin`), or summaries saved by `autonomy-eval summarize -o` "
         "(`.json`). Logs are grouped by the vehicle their contents say they are, and each run is compared "
@@ -219,6 +372,8 @@ with tab_upload:
         "the upload right before it and itself."
     )
     files = st.file_uploader("Flight logs", type=["tlog", "bin", "json"], accept_multiple_files=True)
+    if not files:
+        st.info("No logs yet? The Real ArduPilot CI result tab shows the same comparison on real build history.")
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):
         runs, failed = [], []
         progress = st.progress(0.0, text="Reading logs...")
@@ -238,9 +393,12 @@ with tab_upload:
                         runs.append(s)
                 progress.progress((i + 1) / len(files), text=f"Read {f.name}")
         progress.empty()
+        st.caption(f"Read {len(runs)} of {len(files)} file(s)" + (f"; {len(failed)} could not be read." if failed else "."))
         for msg in failed:
             st.warning(f"Could not read {msg}")
         st.session_state["uploaded_runs"] = runs
+    if not files:
+        st.session_state.pop("uploaded_runs", None)   # cleared files must clear the old results too
     runs = st.session_state.get("uploaded_runs", [])
     groups: dict[tuple, list[FlightSummary]] = {}
     for r in runs:
@@ -252,8 +410,63 @@ with tab_upload:
             continue
         results_section(group, key=f"upload-{vehicle}-{mav_type}")
 
+with tab_checks:
+    st.container(key="ae-intro-checks").markdown(
+        "The stability and estimator checks from the command line, on your own flights. They read raw "
+        "DataFlash `.bin` logs, not summaries, and each needs a flight made for it: a SystemID chirp for "
+        "stability margins, a SITL run that records ground truth for the estimator check, or GUIDED "
+        "position steps for the step response."
+    )
+    kind = st.radio("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0], horizontal=True, key="chk-kind")
+    st.caption(CHECKS[kind][1])
+    st.markdown("**Or try a sample flight** (SITL flights with a known fault). The stability sample is about "
+                "300 MB in total (four files of about 75 MB each), so its first run takes a while; the samples are "
+                "downloaded once and then reused.")
+    for sample_kind, sample_label in [("sysid", "Stability margins"), ("nees", "Estimator consistency"),
+                                      ("step", "Step response")]:
+        if st.button(f"Run {sample_label.lower()} sample", key=f"chk-sample-{sample_kind}"):
+            wait = ("Downloading about 300 MB, first run only..." if sample_kind == "sysid"
+                    else "Downloading the sample flights, first run only...")
+            with st.spinner(wait):
+                try:
+                    st.session_state[f"chk-result-{sample_kind}"] = cached_sample(sample_kind)
+                except Exception as e:  # no network, or a bad download, should not take the page down
+                    st.session_state[f"chk-result-{sample_kind}"] = CheckOutcome(
+                        error=f"Could not load the sample flights: {e}")
+        if f"chk-result-{sample_kind}" in st.session_state:
+            st.markdown(f"**Sample: {CHECKS[sample_kind][0]}**")
+            show_check(st.session_state[f"chk-result-{sample_kind}"], sample_kind)
+    st.markdown("**Or check your own flights**")
+    cand = st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
+    base = st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
+                            type=["bin"], accept_multiple_files=True, key="chk-baseline")
+    want_triage = st.checkbox("Also say whether a flagged result is likely real or noise", value=True,
+                              key="chk-triage")
+    if cand is None:
+        st.session_state.pop("chk-result-upload", None)
+        st.caption("Upload a new flight to start.")
+    elif len(base) < MIN_BASELINE:
+        st.caption(f"Upload at least {MIN_BASELINE} earlier flights to compare against.")
+    elif st.button("Run check", type="primary", key="chk-run"):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for i, f in enumerate([cand, *base]):
+                d = Path(tmp) / str(i)
+                d.mkdir()
+                p = d / Path(f.name).name
+                p.write_bytes(f.getvalue())
+                paths.append(str(p))
+            try:
+                outcome = run_check(kind, paths[0], paths[1:], triage=want_triage)
+            except Exception as e:  # a corrupt or unsupported log should not take the page down
+                outcome = CheckOutcome(error=f"Could not read these logs: {e}")
+        st.session_state["chk-result-upload"] = (outcome, kind)
+    if "chk-result-upload" in st.session_state:
+        shown_outcome, shown_kind = st.session_state["chk-result-upload"]
+        show_check(shown_outcome, shown_kind)
+
 with tab_formats:
-    st.markdown(
+    st.container(key="ae-intro-formats").markdown(
         "ArduPilot records every flight twice: telemetry sent to the ground station (`.tlog`) and the "
         "autopilot's own onboard log (`.bin`). The same two flights, read both ways:"
     )
@@ -264,7 +477,7 @@ with tab_formats:
         {"": "lowest battery (V)", "boat .bin": 11.90, "boat .tlog": 11.90, "rover .bin": 12.53, "rover .tlog": 12.53},
         {"": "in-flight mode changes", "boat .bin": 0, "boat .tlog": 0, "rover .bin": 17, "rover .tlog": 17},
     ]), hide_index=True, use_container_width=True)
-    st.markdown(
+    st.container(key="ae-note-formats").markdown(
         "Where they disagree, the cause is known: DataFlash stores EKF variances at 0.01 resolution; "
         "the `.bin` catches a half-second arm/disarm that 1 Hz telemetry misses; and DataFlash has error "
         f"records telemetry doesn't carry. [Full output]({REPO}/blob/main/docs/cross-format-check.txt)"

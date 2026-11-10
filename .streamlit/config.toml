@@ -3,3 +3,37 @@ gatherUsageStats = false
 
 [theme]
 primaryColor = "#d62728"
+# Serif display headings over a sans body. "serif" and "sans-serif" are fonts bundled with
+# Streamlit (Source Serif / Source Sans), so nothing is fetched from a font CDN.
+font = "sans-serif"
+headingFont = "serif"
+headingFontWeights = [600, 600, 600, 600, 600, 600]
+codeFont = "monospace"
+baseRadius = "0.5rem"
+buttonRadius = "0.5rem"
+showWidgetBorder = true
+linkUnderline = false
+
+[theme.light]
+primaryColor = "#d62728"
+backgroundColor = "#fbfaf8"
+secondaryBackgroundColor = "#f2f0ec"
+textColor = "#1f1d1a"
+linkColor = "#c0201f"
+borderColor = "#e3e0da"
+dataframeBorderColor = "#e3e0da"
+dataframeHeaderBackgroundColor = "#f2f0ec"
+codeBackgroundColor = "#f2f0ec"
+codeTextColor = "#a3201f"
+
+[theme.dark]
+primaryColor = "#d62728"
+backgroundColor = "#151413"
+secondaryBackgroundColor = "#1f1d1b"
+textColor = "#ece8e1"
+linkColor = "#ff6b6b"
+borderColor = "#2e2b28"
+dataframeBorderColor = "#2e2b28"
+dataframeHeaderBackgroundColor = "#1f1d1b"
+codeBackgroundColor = "#1f1d1b"
+codeTextColor = "#f0a6a0"

@@ -7,9 +7,10 @@ name = "autonomy-eval"
 version = "0.1.0"
 description = "Flight regression detection for ArduPilot/MAVLink telemetry logs"
 requires-python = ">=3.10"
-dependencies = ["pymavlink>=2.4.40"]
+dependencies = ["pymavlink>=2.4.40", "numpy>=1.24"]
 
 [project.optional-dependencies]
+sysid = ["scipy>=1.10"]
 dev = ["pytest>=8"]
 demo = ["streamlit>=1.38", "anthropic>=1.0"]
 bisect = ["anthropic>=1.0"]
