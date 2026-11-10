@@ -1,4 +1,4 @@
-"""Web demo: the CI result, a way to try your own logs, and the cross-format check.
+"""Web demo: the CI result, a way to try your own logs, the stability and estimator checks, and the cross-format check.
 
     streamlit run app.py
 """
@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from autonomy_eval import bisect as bisect_mod
+from autonomy_eval.checks import CHECKS, CheckOutcome, run_check
 from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
@@ -250,6 +251,42 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         st.caption(f"Raw log: {cand.source}")
 
 
+def show_triage(verdict: str, items: list[str]) -> None:
+    if verdict == "LIKELY REAL":
+        st.error(f"Triage: likely real. Outside the baseline spread on: {', '.join(items)}")
+    elif verdict == "POSSIBLE":
+        st.warning(f"Triage: possible, not confirmed. Only {items[0]} is outside the spread. "
+                   "One item is usually noise; rerun before treating it as real.")
+    else:
+        st.success("Triage: within noise. The run matches the baseline spread; rerun before treating it as real.")
+
+
+def show_check(outcome: CheckOutcome, kind: str) -> None:
+    if outcome.error:
+        st.error(outcome.error)
+        return
+    c = outcome.comparison
+    st.markdown(f"**{c.candidate.label}**, compared against {len(c.baseline)} earlier flight(s)")
+    if kind == "step":
+        st.info("Information only: step metrics never fail a build.")
+    elif c.failed:
+        st.error("Regression: outside the normal range of the earlier flights.")
+    else:
+        st.success("No regressions: within the normal range of the earlier flights.")
+    if outcome.triage:
+        show_triage(*outcome.triage)
+    if c.findings:
+        st.dataframe(pd.DataFrame([{
+            "": {"worse": "🔴 worse", "better": "🟢 better", "changed": "🟠 changed"}[f.verdict],
+            "what": label(f.metric),
+            "this run": f.value,
+            "normal (median)": f.median,
+            "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
+        } for f in c.findings]), hide_index=True, use_container_width=True)
+    for w in c.warnings:
+        st.caption(f"note: {w}")
+
+
 def results_section(runs: list[FlightSummary], key: str, default_metric: str | None = None) -> None:
     results = scan(runs)
     df = scan_table(results)
@@ -288,7 +325,8 @@ st.html(
     "</header>"
 )
 
-tab_ci, tab_upload, tab_formats = st.tabs(["Real ArduPilot CI result", "Try your own logs", "Same flight, two formats"])
+tab_ci, tab_upload, tab_checks, tab_formats = st.tabs(
+    ["Real ArduPilot CI result", "Try your own logs", "Stability and estimator checks", "Same flight, two formats"])
 
 with tab_ci:
     st.container(key="ae-intro-ci").markdown(
@@ -357,6 +395,39 @@ with tab_upload:
             st.warning(f"Need more than {MIN_BASELINE} logs of this vehicle to compare them.")
             continue
         results_section(group, key=f"upload-{vehicle}-{mav_type}")
+
+with tab_checks:
+    st.markdown(
+        "The stability and estimator checks from the command line, on your own flights. They read raw "
+        "DataFlash `.bin` logs, not summaries, and each needs a flight made for it: a SystemID chirp for "
+        "stability margins, a SITL run that records ground truth for the estimator check, or GUIDED "
+        "position steps for the step response."
+    )
+    kind = st.radio("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0], horizontal=True, key="chk-kind")
+    st.caption(CHECKS[kind][1])
+    cand = st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
+    base = st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
+                            type=["bin"], accept_multiple_files=True, key="chk-baseline")
+    want_triage = st.checkbox("Also say whether a flagged result is likely real or noise", value=True,
+                              key="chk-triage")
+    if cand is None:
+        st.caption("Upload a new flight to start.")
+    elif len(base) < MIN_BASELINE:
+        st.caption(f"Upload at least {MIN_BASELINE} earlier flights to compare against.")
+    elif st.button("Run check", type="primary", key="chk-run"):
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = []
+            for i, f in enumerate([cand, *base]):
+                d = Path(tmp) / str(i)
+                d.mkdir()
+                p = d / Path(f.name).name
+                p.write_bytes(f.getvalue())
+                paths.append(str(p))
+            try:
+                outcome = run_check(kind, paths[0], paths[1:], triage=want_triage)
+            except Exception as e:  # a corrupt or unsupported log should not take the page down
+                outcome = CheckOutcome(error=f"Could not read these logs: {e}")
+        show_check(outcome, kind)
 
 with tab_formats:
     st.container(key="ae-intro-formats").markdown(

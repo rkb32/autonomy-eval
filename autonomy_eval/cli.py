@@ -189,6 +189,17 @@ def cmd_nees_check(args) -> int:
 TRIAGE_MIN_ITEMS = 2   # one flagged item is often noise (a single metric crossed its band by chance)
 
 
+def triage_verdict(result) -> tuple[str, list[str]]:
+    """'LIKELY REAL', 'POSSIBLE' or 'WITHIN NOISE', with the items outside the baseline spread."""
+    names = sorted({f.metric for f in result.regressions} | {m.text for m in result.new_alarms})
+    decisive = {"margin_unmeasurable"} | {m.text for m in result.new_alarms}   # physical signals, never noise
+    if len(names) >= TRIAGE_MIN_ITEMS or decisive & set(names):
+        return "LIKELY REAL", names
+    if names:
+        return "POSSIBLE", names
+    return "WITHIN NOISE", names
+
+
 def cmd_triage(args) -> int:
     """Label a failed or suspicious run: likely real (outside the baseline spread) or within noise (rerun it)."""
     builders = {"summary": None, "sysid": _margin_flight, "nees": _nees_flight, "step": _step_flight}
@@ -199,9 +210,8 @@ def cmd_triage(args) -> int:
         with ProcessPoolExecutor() as pool:
             candidate, *baseline = list(pool.map(builder, [args.log, *args.baseline]))
     result = compare(candidate, baseline)
-    names = sorted({f.metric for f in result.regressions} | {m.text for m in result.new_alarms})
-    decisive = {"margin_unmeasurable"} | {m.text for m in result.new_alarms}   # physical signals, never noise
-    if len(names) >= TRIAGE_MIN_ITEMS or decisive & set(names):
+    label, names = triage_verdict(result)
+    if label == "LIKELY REAL":
         print(f"LIKELY REAL: {candidate.label} is outside the baseline spread on {len(names)} item(s):")
         for n in names:
             print(f"  - {n}")
@@ -210,7 +220,7 @@ def cmd_triage(args) -> int:
             if b is not None and not b.error:
                 print(render_bisection(b))
         return 1
-    if names:
+    if label == "POSSIBLE":
         print(f"POSSIBLE, NOT CONFIRMED: only {names[0]} is outside the baseline spread. "
               f"One item is usually noise; rerun before treating it as real.")
         return 0

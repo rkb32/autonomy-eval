@@ -132,11 +132,12 @@ step metrics are reported for information only. Lowering the steady-state floor 
 ## Web demo
 
 ```bash
-pip install -e ".[demo]" && streamlit run app.py
+pip install -e ".[demo,sysid]" && streamlit run app.py
 ```
 
-Three tabs: the CI result above with a chart of each metric across builds, an upload box for your
-own `.tlog` / `.bin` logs, and the cross-format check below. It runs the same code as the CLI.
+Four tabs: the CI result above with a chart of each metric across builds, an upload box for your
+own `.tlog` / `.bin` logs, the stability and estimator checks (`sysid-check`, `nees-check`, `step-check`,
+and triage) on your own `.bin` logs, and the cross-format check. It runs the same code as the CLI.
 
 ## Run it
 
