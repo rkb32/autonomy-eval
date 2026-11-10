@@ -236,7 +236,7 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
             "this run": f.value,
             "normal (median)": f.median,
             "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
-        } for f in c.findings]), hide_index=True, use_container_width=True)
+        } for f in c.findings]), hide_index=True, width="stretch")
     if c.regressions:
         show_bisection(c, ordered_runs)
     if c.new_alarms:
@@ -291,7 +291,7 @@ def show_check(outcome: CheckOutcome, kind: str) -> None:
             "this run": f.value,
             "normal (median)": f.median,
             "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
-        } for f in c.findings]), hide_index=True, use_container_width=True)
+        } for f in c.findings]), hide_index=True, width="stretch")
     for w in c.warnings:
         st.caption(f"note: {w}")
 
@@ -310,14 +310,14 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
     )
     st.dataframe(
         df.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600", subset=["status"]),
-        hide_index=True, use_container_width=True,
+        hide_index=True, width="stretch",
     )
     flagged_metrics = [f.metric for c in results for f in c.findings if not f.metric.startswith("event:")]
     metrics = sorted({m for r in runs for m in r.metrics})
     default = default_metric or (flagged_metrics[0] if flagged_metrics else "armed_time_s")
     metric = st.selectbox("Compare one metric across runs", metrics, index=metrics.index(default) if default in metrics else 0,
                           format_func=label, key=f"{key}-metric")
-    st.altair_chart(metric_chart(results, metric), use_container_width=True)
+    st.altair_chart(metric_chart(results, metric), width="stretch")
     worst = next((c.candidate.label for c in results if c.failed), results[0].candidate.label)
     choice = st.selectbox("Look at one run in detail", [c.candidate.label for c in results],
                           index=[c.candidate.label for c in results].index(worst), key=f"{key}-detail")
@@ -476,7 +476,7 @@ with tab_formats:
         {"": "worst cross-track error (m)", "boat .bin": 4.381, "boat .tlog": 4.381, "rover .bin": 2.959, "rover .tlog": 2.959},
         {"": "lowest battery (V)", "boat .bin": 11.90, "boat .tlog": 11.90, "rover .bin": 12.53, "rover .tlog": 12.53},
         {"": "in-flight mode changes", "boat .bin": 0, "boat .tlog": 0, "rover .bin": 17, "rover .tlog": 17},
-    ]), hide_index=True, use_container_width=True)
+    ]), hide_index=True, width="stretch")
     st.container(key="ae-note-formats").markdown(
         "Where they disagree, the cause is known: DataFlash stores EKF variances at 0.01 resolution; "
         "the `.bin` catches a half-second arm/disarm that 1 Hz telemetry misses; and DataFlash has error "
