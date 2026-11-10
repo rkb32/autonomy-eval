@@ -5,9 +5,11 @@ web page both go through these builders, so they cannot disagree.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,14 +27,26 @@ SAMPLE_CACHE = Path(tempfile.gettempdir()) / "autonomy-eval-samples"
 
 
 def fetch_sample(name: str) -> Path:
-    """Download one sample log once; later calls reuse the cached copy."""
+    """Download one sample log once; later calls reuse the cached copy.
+
+    Each download writes its own temp file and checks the byte count, so two visitors
+    downloading at the same time cannot corrupt each other's copy.
+    """
     SAMPLE_CACHE.mkdir(parents=True, exist_ok=True)
     dest = SAMPLE_CACHE / name
-    if not dest.exists() or dest.stat().st_size == 0:
-        part = dest.with_suffix(".part")
+    if dest.exists() and dest.stat().st_size > 0:
+        return dest
+    part = SAMPLE_CACHE / f"{name}.{uuid.uuid4().hex}.part"
+    try:
         with urllib.request.urlopen(SAMPLE_BASE_URL + name, timeout=300) as r, open(part, "wb") as out:
             shutil.copyfileobj(r, out)
-        part.replace(dest)
+            expected = r.headers.get("Content-Length")
+        got = part.stat().st_size
+        if expected is not None and got != int(expected):
+            raise OSError(f"download of {name} was cut short ({got} of {expected} bytes)")
+        os.replace(part, dest)
+    finally:
+        part.unlink(missing_ok=True)
     return dest
 
 CHECKS = {
@@ -60,7 +74,7 @@ def run_check(kind: str, candidate: str, baseline: list[str], triage: bool = Fal
     try:
         flights = [_BUILDERS[kind](p) for p in [candidate, *baseline]]
     except ImportError as e:   # the stability check needs scipy (the [sysid] extra)
-        return CheckOutcome(error=f"this check needs an extra package: {e.name}. Install it and reload.")
+        return CheckOutcome(error=f"this check needs an extra package: {e.name or e}. Install it and reload.")
     if _NO_DATA[kind]:
         for f in flights:
             if not f.metrics:

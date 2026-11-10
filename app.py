@@ -258,7 +258,7 @@ def show_triage(verdict: str, items: list[str]) -> None:
         st.warning(f"Triage: possible, not confirmed. Only {items[0]} is outside the spread. "
                    "One item is usually noise; rerun before treating it as real.")
     else:
-        st.success("Triage: within noise. The run matches the baseline spread; rerun before treating it as real.")
+        st.success("Triage: within noise. The run matches the baseline spread.")
 
 
 def show_check(outcome: CheckOutcome, kind: str) -> None:
@@ -406,7 +406,8 @@ with tab_checks:
     kind = st.radio("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0], horizontal=True, key="chk-kind")
     st.caption(CHECKS[kind][1])
     st.markdown("**Or try a sample flight** (SITL flights with a known fault). The stability sample is about "
-                "300 MB, so its first run takes a while; the samples are downloaded once and then reused.")
+                "300 MB in total (four files of about 75 MB each), so its first run takes a while; the samples are "
+                "downloaded once and then reused.")
     sample_cols = st.columns(3)
     for col, (sample_kind, sample_label) in zip(sample_cols, [("sysid", "Stability margins"),
                                                              ("nees", "Estimator consistency"),
@@ -418,7 +419,11 @@ with tab_checks:
                     sample_outcome = run_sample(sample_kind)
                 except Exception as e:  # no network, or a bad download, should not take the page down
                     sample_outcome = CheckOutcome(error=f"Could not load the sample flights: {e}")
-            show_check(sample_outcome, sample_kind)
+            st.session_state[f"chk-result-{sample_kind}"] = sample_outcome
+    for sample_kind in ("sysid", "nees", "step"):
+        if f"chk-result-{sample_kind}" in st.session_state:
+            st.markdown(f"**Sample: {CHECKS[sample_kind][0]}**")
+            show_check(st.session_state[f"chk-result-{sample_kind}"], sample_kind)
     st.markdown("**Or check your own flights**")
     cand = st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
     base = st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
@@ -426,6 +431,7 @@ with tab_checks:
     want_triage = st.checkbox("Also say whether a flagged result is likely real or noise", value=True,
                               key="chk-triage")
     if cand is None:
+        st.session_state.pop("chk-result-upload", None)
         st.caption("Upload a new flight to start.")
     elif len(base) < MIN_BASELINE:
         st.caption(f"Upload at least {MIN_BASELINE} earlier flights to compare against.")
@@ -442,7 +448,10 @@ with tab_checks:
                 outcome = run_check(kind, paths[0], paths[1:], triage=want_triage)
             except Exception as e:  # a corrupt or unsupported log should not take the page down
                 outcome = CheckOutcome(error=f"Could not read these logs: {e}")
-        show_check(outcome, kind)
+        st.session_state["chk-result-upload"] = (outcome, kind)
+    if "chk-result-upload" in st.session_state:
+        shown_outcome, shown_kind = st.session_state["chk-result-upload"]
+        show_check(shown_outcome, shown_kind)
 
 with tab_formats:
     st.container(key="ae-intro-formats").markdown(
