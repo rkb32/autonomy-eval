@@ -3,7 +3,7 @@ import math
 
 import numpy as np
 
-from autonomy_eval.margins import margins_from_open_loop
+from autonomy_eval.margins import margins_from_open_loop, unmeasured_margin_bound
 
 F = np.logspace(-1, 1.5, 6000)
 
@@ -62,3 +62,24 @@ def test_low_gain_loop_has_no_crossover():
     gm, pm, fc = margins_from_open_loop(F, L)
     assert pm is None and fc is None
     assert gm is not None                    # phase still crosses -180
+
+
+def test_gap_while_gain_is_above_one_gives_a_phase_margin_bound():
+    # Measured only below 5 Hz, where |L| = 7.5 and the phase is about -236 deg: the crossover is in the gap.
+    L = 1000.0 / (1 + 1j * F) ** 3
+    L[F > 5.0] = np.nan
+    f_last, gain, pm_bound = unmeasured_margin_bound(F, L)
+    assert abs(f_last - 5.0) < 0.05
+    assert gain > 1.0
+    assert abs(pm_bound - (180 - 3 * math.degrees(math.atan(f_last)))) < 0.5
+
+
+def test_gap_with_gain_already_below_one_gives_no_bound():
+    L = 0.2 / (1 + 1j * F) ** 3
+    L[F > 5.0] = np.nan
+    assert unmeasured_margin_bound(F, L) is None
+
+
+def test_no_gap_gives_no_bound():
+    L = 1000.0 / (1 + 1j * F) ** 3           # measured everywhere, so there is nothing to bound
+    assert unmeasured_margin_bound(F, L) is None

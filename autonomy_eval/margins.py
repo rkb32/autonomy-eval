@@ -99,18 +99,27 @@ def margins_from_open_loop(f, L):
     return gm, pm, fc
 
 
-def sysid_margins(path: str | Path) -> dict[str, float]:
-    """Margin metrics for one SystemID flight. Empty if the chirp did not give usable margins."""
+def _open_loop(path: str | Path):
+    """(frequencies, open-loop L) with NaN where coherence is too low, or None if too little data."""
     t, targ, gyro = read_sidd(path)
     if len(t) < 64:
-        return {}
+        return None
     f, T, coh = closed_loop(t, targ, gyro)
     keep = (coh >= COH_MIN) & (f >= F_MIN_HZ) & (f <= F_MAX_HZ) & (np.abs(1 - T) > 1e-9)
     if keep.sum() < 8:
-        return {}
+        return None
     # Bins that fail the coherence test stay in place as NaN, so crossings never bridge a gap.
     L = np.full(len(f), np.nan + 0j)
     L[keep] = T[keep] / (1 - T[keep])
+    return f, L
+
+
+def sysid_margins(path: str | Path) -> dict[str, float]:
+    """Margin metrics for one SystemID flight. Empty if the chirp did not give usable margins."""
+    loop = _open_loop(path)
+    if loop is None:
+        return {}
+    f, L = loop
     gm, pm, _ = margins_from_open_loop(f, L)
     out = {}
     if pm is not None:
@@ -118,3 +127,38 @@ def sysid_margins(path: str | Path) -> dict[str, float]:
     if gm is not None:
         out["margin_gm_db"] = round(float(gm), 2)
     return out
+
+
+def unmeasured_margin_bound(f, L):
+    """For a loop whose crossover falls in a coherence gap: (last measured Hz, |L| there, phase margin bound deg).
+
+    Uses the first run of measured bins. If |L| is still above 1 at its end, the gain crossover is above
+    that frequency, and the phase keeps falling, so the phase margin is at most the value returned.
+    None if there is no gap after that run, or |L| is already below 1 there.
+    """
+    f = np.asarray(f, dtype=float)
+    L = np.asarray(L, dtype=complex)
+    finite = np.isfinite(L)
+    if not finite.any():
+        return None
+    start = int(np.argmax(finite))
+    end = start
+    while end + 1 < len(L) and finite[end + 1]:
+        end += 1
+    if end + 1 >= len(L) or not abs(L[end]) > 1.0:
+        return None
+    phase = np.degrees(np.unwrap(np.angle(L[start:end + 1])))
+    return float(f[end]), float(abs(L[end])), float(180.0 + phase[-1])
+
+
+def margin_note(path: str | Path) -> str | None:
+    """One line for the web page: why a SystemID flight's margins could not be measured, if the data says."""
+    loop = _open_loop(path)
+    if loop is None:
+        return None
+    bound = unmeasured_margin_bound(*loop)
+    if bound is None:
+        return None
+    f_last, gain, pm_bound = bound
+    return (f"Margins not measured: coherence drops below {COH_MIN} above {f_last:.1f} Hz. "
+            f"At {f_last:.1f} Hz the gain is still {gain:.2f}, so the phase margin is likely under {pm_bound:.0f} deg.")

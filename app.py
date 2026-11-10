@@ -115,6 +115,7 @@ STYLE = """
 @media (max-width: 640px) {
   [data-testid="stMainBlockContainer"] { padding-left: 1rem; padding-right: 1rem; padding-top: 3.25rem; }
   [data-testid="stTabs"] [data-baseweb="tab-list"], [data-testid="stTabs"] [role="tablist"] { gap: 1.1rem; }
+  [data-testid="stTabs"] [role="tablist"] { flex-wrap: wrap; row-gap: 0.25rem; overflow: visible; }
   .ae-stat { min-width: 0; flex: 1 1 40%; }
 }
 </style>
@@ -281,6 +282,8 @@ def show_check(outcome: CheckOutcome, kind: str) -> None:
         st.success("No regressions: within the normal range of the earlier flights.")
     if outcome.triage:
         show_triage(*outcome.triage)
+    if outcome.note:
+        st.caption(outcome.note)
     if c.findings:
         st.dataframe(pd.DataFrame([{
             "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],

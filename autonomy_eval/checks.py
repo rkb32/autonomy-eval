@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .cli import _margin_flight, _missing_in_candidate, _nees_flight, _step_flight, triage_verdict
 from .compare import Incomparable, Comparison, compare
+from .margins import margin_note
 
 # Sample flights (SITL, with a known fault), published as a GitHub release asset and downloaded on demand.
 SAMPLE_BASE_URL = "https://github.com/rkb32/autonomy-eval/releases/download/sample-logs-v1/"
@@ -67,6 +68,7 @@ class CheckOutcome:
     comparison: Comparison | None = None
     error: str | None = None
     triage: tuple[str, list[str]] | None = None   # (label, items outside the baseline spread), if asked for
+    note: str | None = None                        # sysid only: how far the margins can be bounded, if not measured
 
 
 def run_check(kind: str, candidate: str, baseline: list[str], triage: bool = False) -> CheckOutcome:
@@ -90,7 +92,10 @@ def run_check(kind: str, candidate: str, baseline: list[str], triage: bool = Fal
         result = compare(cand, base)
     except Incomparable as e:
         return CheckOutcome(error=str(e))
-    return CheckOutcome(comparison=result, triage=triage_verdict(result) if triage else None)
+    note = None
+    if kind == "sysid" and cand.metrics.get("margin_unmeasurable") == 1.0:
+        note = margin_note(cand.source)
+    return CheckOutcome(comparison=result, triage=triage_verdict(result) if triage else None, note=note)
 
 
 def run_sample(kind: str) -> CheckOutcome:
