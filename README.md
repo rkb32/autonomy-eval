@@ -137,7 +137,7 @@ pip install -e ".[demo,sysid]" && streamlit run app.py
 
 Four tabs: the CI result above with a chart of each metric across builds, an upload box for your
 own `.tlog` / `.bin` logs, the stability and estimator checks (`sysid-check`, `nees-check`, `step-check`,
-and triage) on your own `.bin` logs, and the cross-format check. It runs the same code as the CLI.
+and triage) on your own `.bin` logs or on sample flights from the [sample-logs-v1 release](https://github.com/rkb32/autonomy-eval/releases/tag/sample-logs-v1), and the cross-format check. It runs the same code as the CLI.
 
 ## Run it
 

@@ -5,10 +5,35 @@ web page both go through these builders, so they cannot disagree.
 """
 from __future__ import annotations
 
+import shutil
+import tempfile
+import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
 from .cli import _margin_flight, _missing_in_candidate, _nees_flight, _step_flight, triage_verdict
 from .compare import Incomparable, Comparison, compare
+
+# Sample flights (SITL, with a known fault), published as a GitHub release asset and downloaded on demand.
+SAMPLE_BASE_URL = "https://github.com/rkb32/autonomy-eval/releases/download/sample-logs-v1/"
+SAMPLES = {
+    "sysid": ("sysid-candidate-rollgain.bin", ["sysid-baseline-1.bin", "sysid-baseline-2.bin", "sysid-baseline-3.bin"]),
+    "nees": ("nees-candidate-gpsvel.bin", ["nees-baseline-1.bin", "nees-baseline-2.bin", "nees-baseline-3.bin"]),
+    "step": ("step-candidate-weakgain.bin", ["step-baseline-1.bin", "step-baseline-2.bin", "step-baseline-3.bin"]),
+}
+SAMPLE_CACHE = Path(tempfile.gettempdir()) / "autonomy-eval-samples"
+
+
+def fetch_sample(name: str) -> Path:
+    """Download one sample log once; later calls reuse the cached copy."""
+    SAMPLE_CACHE.mkdir(parents=True, exist_ok=True)
+    dest = SAMPLE_CACHE / name
+    if not dest.exists() or dest.stat().st_size == 0:
+        part = dest.with_suffix(".part")
+        with urllib.request.urlopen(SAMPLE_BASE_URL + name, timeout=300) as r, open(part, "wb") as out:
+            shutil.copyfileobj(r, out)
+        part.replace(dest)
+    return dest
 
 CHECKS = {
     "sysid": ("Stability margins",
@@ -50,3 +75,10 @@ def run_check(kind: str, candidate: str, baseline: list[str], triage: bool = Fal
     except Incomparable as e:
         return CheckOutcome(error=str(e))
     return CheckOutcome(comparison=result, triage=triage_verdict(result) if triage else None)
+
+
+def run_sample(kind: str) -> CheckOutcome:
+    """Run one check on the bundled sample flights (downloads them the first time)."""
+    cand, base = SAMPLES[kind]
+    paths = [str(fetch_sample(n)) for n in [cand, *base]]
+    return run_check(kind, paths[0], paths[1:], triage=True)

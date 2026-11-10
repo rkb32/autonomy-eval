@@ -13,7 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from autonomy_eval import bisect as bisect_mod
-from autonomy_eval.checks import CHECKS, CheckOutcome, run_check
+from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
 from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
@@ -405,6 +405,21 @@ with tab_checks:
     )
     kind = st.radio("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0], horizontal=True, key="chk-kind")
     st.caption(CHECKS[kind][1])
+    st.markdown("**Or try a sample flight** (SITL flights with a known fault). The stability sample is about "
+                "300 MB, so its first run takes a while; the samples are downloaded once and then reused.")
+    sample_cols = st.columns(3)
+    for col, (sample_kind, sample_label) in zip(sample_cols, [("sysid", "Stability margins"),
+                                                             ("nees", "Estimator consistency"),
+                                                             ("step", "Step response")]):
+        if col.button(f"Run {sample_label.lower()} sample", key=f"chk-sample-{sample_kind}",
+                      use_container_width=True):
+            with st.spinner("Downloading and checking the sample flights..."):
+                try:
+                    sample_outcome = run_sample(sample_kind)
+                except Exception as e:  # no network, or a bad download, should not take the page down
+                    sample_outcome = CheckOutcome(error=f"Could not load the sample flights: {e}")
+            show_check(sample_outcome, sample_kind)
+    st.markdown("**Or check your own flights**")
     cand = st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
     base = st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
                             type=["bin"], accept_multiple_files=True, key="chk-baseline")
