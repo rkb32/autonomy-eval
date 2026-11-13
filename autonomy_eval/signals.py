@@ -41,6 +41,23 @@ def list_signals(path: str | Path) -> dict[str, list[str]]:
         log.close()   # on Windows an open log keeps its temp file locked
 
 
+def arm_time(path: str | Path) -> float | None:
+    """Seconds from the log start to the first arming, or None if the log has no ARM records.
+
+    If the first ARM record is a disarm, the log started while armed, so arming was at the start.
+    """
+    log = _open(path)
+    try:
+        first = log.recv_match(type="ARM")
+        if first is None:
+            return None
+        if not first.ArmState:
+            return 0.0
+        return first.TimeUS / 1e6
+    finally:
+        log.close()
+
+
 def read_signal(path: str | Path, msg: str, field: str) -> tuple[list[float], list[float]]:
     """(time in seconds, value) for one field of one message type, in log order."""
     log = _open(path)

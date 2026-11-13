@@ -18,7 +18,7 @@ from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
 from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
-from autonomy_eval.signals import list_signals, read_signal
+from autonomy_eval.signals import arm_time, list_signals, read_signal
 
 EXAMPLES = Path(__file__).parent / "examples"
 REPO = "https://github.com/rkb32/autonomy-eval"
@@ -236,33 +236,63 @@ def log_signal(name: str, data: bytes, msg: str, field: str):
     return in_temp_file(name, data, read_signal, msg, field)
 
 
+@st.cache_data(show_spinner=False)
+def log_arm_time(name: str, data: bytes):
+    return in_temp_file(name, data, arm_time)
+
+
 @st.fragment
 def signal_section(bins: list) -> None:
-    """Plot one logged field over time. A fragment, so changing the pickers does not rerun the page."""
+    """Plot one logged field over time, for one or several logs. A fragment, so the pickers do not rerun the page."""
     st.subheader("Plot any signal")
-    st.caption("Pick a message and a field from one .bin log to see it over time. Text fields are left out.")
-    chosen = st.selectbox("Log", [f.name for f in bins], key="sig-log")
-    name, data = next((f.name, f.getvalue()) for f in bins if f.name == chosen)
-    signals = log_signals(name, data)
-    if not signals:
-        st.info("This log has no numeric messages with a clock.")
+    st.caption("Pick a message and a field to see it over time. Choose several logs to overlay them. "
+               "Text fields are left out.")
+    names = [f.name for f in bins]
+    picked = st.multiselect("Logs", names, default=names[:2], key="sig-logs")
+    if not picked:
+        st.info("Pick at least one log.")
         return
-    msg = st.selectbox("Message", list(signals), key="sig-msg")
-    field = st.selectbox("Field", signals[msg], key="sig-field")
-    t, v = log_signal(name, data, msg, field)
-    if not t:
-        st.info(f"{msg} has no samples for {field} in this log.")
+    datas = {f.name: f.getvalue() for f in bins if f.name in picked}
+    lists = [log_signals(n, d) for n, d in datas.items()]
+    common = sorted(set.intersection(*(set(s) for s in lists)))
+    if not common:
+        st.info("These logs have no message type in common.")
         return
-    step = max(1, len(t) // 4000)     # about 4000 points is plenty to see a signal, and keeps the page light
-    df = pd.DataFrame({"t": t[::step], "value": v[::step]})
-    chart = alt.Chart(df).mark_line(strokeWidth=1.3, color="#64748b").encode(
-        x=alt.X("t:Q", title="time (s)"),
+    msg = st.selectbox("Message", common, key="sig-msg")
+    fields = [f for f in lists[0][msg] if all(f in s[msg] for s in lists)]
+    field = st.selectbox("Field", fields, key="sig-field")
+    align = st.toggle("Line up on arming", value=True, key="sig-align")
+
+    frames, unaligned = [], []
+    for n, d in datas.items():
+        t, v = log_signal(n, d, msg, field)
+        if not t:
+            continue
+        offset = 0.0
+        if align:
+            at = log_arm_time(n, d)
+            if at is None:
+                unaligned.append(n)
+            else:
+                offset = at
+        step = max(1, len(t) // 4000)     # about 4000 points per log is plenty to see a signal
+        frames.append(pd.DataFrame({"t": [x - offset for x in t[::step]], "value": v[::step], "log": n}))
+    if not frames:
+        st.info(f"{msg}.{field} has no samples in the chosen logs.")
+        return
+    df = pd.concat(frames, ignore_index=True)
+    chart = alt.Chart(df).mark_line(strokeWidth=1.3).encode(
+        x=alt.X("t:Q", title="time from arming (s)" if align else "time (s)"),
         y=alt.Y("value:Q", title=f"{msg}.{field}", scale=alt.Scale(zero=False)),
-        tooltip=[alt.Tooltip("t:Q", title="time (s)", format=".1f"),
+        color=alt.Color("log:N", legend=alt.Legend(title=None, orient="top")),
+        tooltip=[alt.Tooltip("log:N", title="log"), alt.Tooltip("t:Q", title="time (s)", format=".1f"),
                  alt.Tooltip("value:Q", title=f"{msg}.{field}", format=".4g")],
-    ).properties(height=280)
+    ).properties(height=300)
     st.altair_chart(chart, width="stretch")
-    st.caption(f"{len(t)} samples" + (f", every {step}th one plotted" if step > 1 else "") + ".")
+    note = "Each line is thinned to at most 4000 points."
+    if align and unaligned:
+        note += " Logs with no arm record start from their first sample: " + ", ".join(unaligned) + "."
+    st.caption(note)
 
 
 def regression_text(outcome: CheckOutcome) -> str:
