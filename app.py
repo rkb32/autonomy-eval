@@ -27,9 +27,9 @@ HISTORIES = {
 }
 STATUS_COLORS = {"REGRESSED": "#d62728", "changed": "#e08600", "ok": "#9aa0a6"}
 SAMPLES = [
-    ("sysid", "Run stability sample (about 300 MB, first run is slow)"),
-    ("nees", "Run estimator sample"),
-    ("step", "Run step response sample"),
+    ("sysid", "Run the stability sample (about 300 MB; the first run is slow)"),
+    ("nees", "Run the estimator sample"),
+    ("step", "Run the step response sample"),
 ]
 
 st.set_page_config(page_title="Autonomy-eval", layout="centered")
@@ -162,13 +162,13 @@ def show_bisection(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         return
     st.markdown(f"**Possible cause** ([{b.base}...{b.head}]({b.compare_url}))")
     if b.error:
-        st.caption(f"Could not find the cause: {b.error}")
+        st.caption(f"Could not pin down the cause: {b.error}")
         return
     if not b.suspects:
-        st.caption(f"None of the {b.total_commits} commit(s) in this range touch code related to "
-                   f"{label(c.regressions[0].metric)}. That suggests noise, not a firmware bug.")
+        st.caption(f"None of the {b.total_commits} commits in this range touch code related to "
+                   f"{label(c.regressions[0].metric)}, which points to noise rather than a firmware bug.")
     else:
-        st.caption(f"{len(b.suspects)} of {b.total_commits} commit(s) touch related code:")
+        st.caption(f"{len(b.suspects)} of {b.total_commits} commits touch related code:")
         for s in b.suspects:
             st.markdown(f"- `{s.sha}` {s.message} — {', '.join(s.files)}")
     if b.ai:
@@ -187,25 +187,25 @@ def findings_table(c: Comparison) -> pd.DataFrame:
 
 def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
     cand = c.candidate
-    st.markdown(f"**{cand.label}** ({vehicle_kind(cand.vehicle, cand.mav_type)}), compared against "
+    st.markdown(f"**{cand.label}** ({vehicle_kind(cand.vehicle, cand.mav_type)}), compared with "
                 f"{len(c.baseline)} other runs: {', '.join(b.label for b in c.baseline)}")
     for w in c.warnings:
         st.caption(f"note: {w}")
     if not c.flag_count:
-        st.success("No regressions: every metric is within the normal range of the other runs.")
+        st.success("Nothing regressed. Every metric sits within the normal range of the other runs.")
         return
     if c.findings:
         st.table(findings_table(c).style.hide(axis="index"))
     if c.regressions:
         show_bisection(c, ordered_runs)
     if c.new_alarms:
-        st.error("New warnings/errors never seen before:\n\n" +
+        st.error("These warnings or errors have never appeared in the other runs:\n\n" +
                  "\n".join(f"- [{SEVERITY[m.severity]}] {m.text}" for m in c.new_alarms))
     info = [m for m in c.new_messages if not m.alarming]
     if info:
-        st.info("New messages (informational):\n\n" + "\n".join(f"- {m.text}" for m in info))
+        st.info("New messages (for information only):\n\n" + "\n".join(f"- {m.text}" for m in info))
     if c.missing_messages:
-        st.info("Missing messages (seen in every other run, absent here):\n\n" +
+        st.info("Messages that appear in every other run but are missing here:\n\n" +
                 "\n".join(f"- {m}" for m in c.missing_messages))
     if cand.source.startswith("http"):
         st.caption(f"Raw log: {cand.source}")
@@ -222,12 +222,12 @@ def regression_text(outcome: CheckOutcome) -> str:
     if outcome.triage:
         verdict, items = outcome.triage
         if verdict == "LIKELY REAL":
-            return f"Regression, likely real: outside the normal range on {', '.join(items)}."
+            return f"This looks like a real regression: {', '.join(items)} fell outside the normal range."
         if verdict == "POSSIBLE":
-            return (f"Regression, possibly noise: only {items[0]} is outside the normal range. "
-                    "Rerun before trusting it.")
-        return "Regression, probably noise: the run matches the normal range of the earlier flights."
-    return "Regression: outside the normal range of the earlier flights."
+            return (f"This may be noise. Only {items[0]} fell outside the normal range, "
+                    "so rerun the flight before trusting it.")
+        return "This is probably noise. The run as a whole matches the normal range of the earlier flights."
+    return "The run fell outside the normal range of the earlier flights."
 
 
 def show_check(outcome: CheckOutcome, kind: str) -> None:
@@ -235,13 +235,13 @@ def show_check(outcome: CheckOutcome, kind: str) -> None:
         st.error(outcome.error)
         return
     c = outcome.comparison
-    st.markdown(f"**{c.candidate.label}**, compared against {len(c.baseline)} earlier flight(s)")
+    st.markdown(f"**{c.candidate.label}**, compared with {len(c.baseline)} earlier flight(s)")
     if kind == "step":
-        st.info("Information only: step metrics never fail a build.")
+        st.info("For information only: step metrics never fail a build.")
     elif c.failed:
         st.error(regression_text(outcome))
     else:
-        st.success("No regressions: within the normal range of the earlier flights.")
+        st.success("Nothing regressed. The run sits within the normal range of the earlier flights.")
     if outcome.note:
         st.caption(outcome.note)
     if c.findings:
@@ -258,12 +258,12 @@ def detail_section(results: list[Comparison], runs: list[FlightSummary], key: st
     flagged_metrics = [f.metric for c in results for f in c.findings if not f.metric.startswith("event:")]
     metrics = sorted({m for r in runs for m in r.metrics})
     default = default_metric or (flagged_metrics[0] if flagged_metrics else "armed_time_s")
-    with st.expander("Chart and run detail"):
-        metric = st.selectbox("Compare one metric across runs", metrics,
+    with st.expander("Charts and details"):
+        metric = st.selectbox("Pick a metric to compare across builds", metrics,
                               index=metrics.index(default) if default in metrics else 0,
                               format_func=label, key=f"{key}-metric")
         st.altair_chart(metric_chart(results, metric), width="stretch")
-        choice = st.selectbox("Look at one run in detail", labels, index=labels.index(worst), key=f"{key}-detail")
+        choice = st.selectbox("Pick one build to look at closely", labels, index=labels.index(worst), key=f"{key}-detail")
         show_detail(next(c for c in results if c.candidate.label == choice), runs)
 
 
@@ -274,43 +274,43 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
     worst = next((c.candidate.label for c in results if c.failed), results[0].candidate.label)
     # One verdict line first; the table, chart and per-run detail below it are for checking the verdict.
     if counts["REGRESSED"]:
-        st.error(f"{counts['REGRESSED']} of {len(results)} builds regressed. The first one is {worst}.")
+        st.error(f"{counts['REGRESSED']} of {len(results)} builds regressed, starting with {worst}.")
     elif counts["changed"]:
-        st.warning(f"No regressions. {counts['changed']} of {len(results)} builds changed on at least one metric.")
+        st.warning(f"Nothing regressed, but {counts['changed']} of {len(results)} builds changed on at least one metric.")
     else:
-        st.success(f"No regressions in {len(results)} builds.")
+        st.success(f"Nothing regressed across the {len(results)} builds.")
 
-    only_changed = st.toggle("Only builds that changed", key=f"{key}-only")
+    only_changed = st.toggle("Show only builds that changed", key=f"{key}-only")
     shown = df[df["status"] != "ok"] if only_changed else df
     if shown.empty:
-        st.caption("No build changed. Turn the filter off to see all builds.")
+        st.caption("No build changed. Turn the filter off to see them all.")
     else:
         st.table(shown.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600",
                                  subset=["status"]).hide(axis="index"))
     with st.popover("What does normal mean?"):
         st.markdown(
-            "Normal is compared against the other runs, metric by metric, using their median. "
-            "A metric is flagged when this run moves outside the range those runs show."
+            "\"Normal\" is the typical value across the other runs, one metric at a time (their median). "
+            "A metric gets flagged when this run lands outside the range the other runs cover."
         )
-    st.download_button("Download builds (CSV)", data=df.to_csv(index=False).encode("utf-8"),
+    st.download_button("Download this table (CSV)", data=df.to_csv(index=False).encode("utf-8"),
                        file_name=f"{key}-builds.csv", mime="text/csv", key=f"{key}-csv")
     detail_section(results, runs, key, default_metric, worst)
 
 
 st.title("Autonomy-eval")
 st.markdown(
-    "Did this build fly worse than the earlier ones? This compares a flight log against earlier flights of the "
-    "same vehicle and flags anything outside the normal range. Most ArduPilot log tools look at one flight at a time."
+    "Did this build fly worse than the ones before it? Autonomy-eval compares a flight log with earlier flights of the "
+    "same vehicle and flags anything that falls outside the normal range. Most ArduPilot log tools look at one flight at a time, so they cannot say whether a build got worse."
 )
 st.link_button("Source on GitHub", REPO)
-st.html('<p class="ae-keys">Keys: <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> switch tabs</p>')
+st.html('<p class="ae-keys">Press <kbd>1</kbd>, <kbd>2</kbd> or <kbd>3</kbd> to switch tabs</p>')
 
 tab_ci, tab_upload, tab_checks = st.tabs(["Example result", "Check your logs", "Check one flight"])
 
 with tab_ci:
     st.markdown(
-        "ArduPilot's CI reruns the same test missions on every firmware build and publishes the telemetry. "
-        "Each build is compared against the other seven."
+        "ArduPilot's CI flies the same test missions on every firmware build and saves the telemetry. "
+        "Each build here is compared with the other seven."
     )
     # A shared link can open a given history: ?history=ardurover-ground-rover
     linked = st.query_params.get("history")
@@ -337,17 +337,17 @@ with tab_ci:
         )
 
 with tab_upload:
-    st.markdown(f"Upload at least {MIN_BASELINE + 1} logs of the **same vehicle and mission**:")
+    st.markdown(f"To compare runs, upload at least {MIN_BASELINE + 1} logs of the **same vehicle and mission**.")
     st.markdown(
-        "- **Formats:** MAVLink telemetry (`.tlog`), ArduPilot DataFlash (`.bin`), or summaries saved by "
+        "- **Formats:** MAVLink telemetry (`.tlog`), ArduPilot DataFlash logs (`.bin`), or summaries saved by "
         "`autonomy-eval summarize -o` (`.json`).\n"
-        "- **Oldest build first.** A regression's possible cause looks at the commits between it and the "
-        "build right before it.\n"
-        "- **Private:** files are read in memory for this session and not kept."
+        "- **Oldest build first.** The possible cause of a regression comes from the commits between it and the "
+        "build just before it.\n"
+        "- **Private:** your files are read into memory for this session only and are never kept."
     )
     files = st.file_uploader("Flight logs", type=["tlog", "bin", "json"], accept_multiple_files=True)
     if not files:
-        st.info("No logs yet? The Example result tab (key 1) shows the same comparison on real build history.")
+        st.info("No logs yet? The Example result tab (press 1) shows the same comparison on real build history.")
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):
         runs, failed = [], []
         progress = st.progress(0.0, text="Reading logs...")
@@ -367,7 +367,7 @@ with tab_upload:
                         runs.append(s)
                 progress.progress((i + 1) / len(files), text=f"Read {f.name}")
         progress.empty()
-        st.caption(f"Read {len(runs)} of {len(files)} file(s)" + (f"; {len(failed)} could not be read." if failed else "."))
+        st.caption(f"Read {len(runs)} of {len(files)} files" + (f"; {len(failed)} could not be read." if failed else "."))
         for msg in failed:
             st.warning(f"Could not read {msg}")
         st.session_state["uploaded_runs"] = runs
@@ -380,14 +380,14 @@ with tab_upload:
     for (vehicle, mav_type), group in groups.items():
         st.subheader(f"{vehicle_kind(vehicle, mav_type)}: {len(group)} log(s)")
         if len(group) <= MIN_BASELINE:
-            st.warning(f"Need more than {MIN_BASELINE} logs of this vehicle to compare them.")
+            st.warning(f"Upload more than {MIN_BASELINE} logs of this vehicle to compare them.")
             continue
         results_section(group, key=f"upload-{vehicle}-{mav_type}")
 
 with tab_checks:
     st.markdown(
-        "Run the stability and estimator checks from the command line, on your own flights or a sample. They read "
-        "raw DataFlash `.bin` logs, and each needs a flight made for it: a SystemID chirp for stability margins, "
+        "These are the same stability and estimator checks the command line runs. Use your own flights or a sample. Each one reads "
+        "raw DataFlash `.bin` logs and needs a flight made for it: a SystemID chirp for stability margins, "
         "a SITL run with ground truth for the estimator, or GUIDED position steps for the step response."
     )
     kind = st.segmented_control("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0],
@@ -395,19 +395,19 @@ with tab_checks:
     st.caption(CHECKS[kind][1])
 
     st.subheader("Try a sample flight")
-    st.caption("SITL flights with a known fault. The first run downloads them once; later runs reuse them.")
+    st.caption("These are simulated flights with a known fault. The first run downloads them; later runs reuse them.")
     for sample_kind, button_text in SAMPLES:
         if st.button(button_text, key=f"chk-sample-{sample_kind}"):
-            wait = ("Downloading about 300 MB, first run only..." if sample_kind == "sysid"
-                    else "Downloading the sample flights, first run only...")
+            wait = ("Downloading about 300 MB. This happens only on the first run..." if sample_kind == "sysid"
+                    else "Downloading the sample flights. This happens only on the first run...")
             slot = st.empty()
             slot.html(skeleton(wait))
             try:
                 st.session_state[f"chk-result-{sample_kind}"] = cached_sample(sample_kind)
-                st.toast(f"{CHECKS[sample_kind][0]} sample ready")
+                st.toast(f"The {CHECKS[sample_kind][0].lower()} sample is ready")
             except Exception as e:  # no network, or a bad download, should not take the page down
                 st.session_state[f"chk-result-{sample_kind}"] = CheckOutcome(
-                    error=f"Could not load the sample flights: {e}")
+                    error=f"The sample flights could not be loaded: {e}")
             slot.empty()
         if f"chk-result-{sample_kind}" in st.session_state:
             st.markdown(f"**Sample: {CHECKS[sample_kind][0]}**")
@@ -417,13 +417,13 @@ with tab_checks:
     cand = st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
     base = st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
                             type=["bin"], accept_multiple_files=True, key="chk-baseline")
-    want_triage = st.checkbox("Also say whether a flagged result looks real or like noise", value=True,
+    want_triage = st.checkbox("Also judge whether a flagged result is real or just noise", value=True,
                               key="chk-triage")
     if cand is None:
         st.session_state.pop("chk-result-upload", None)
-        st.caption("Upload a new flight to start.")
+        st.caption("Upload a new flight to begin.")
     elif len(base) < MIN_BASELINE:
-        st.caption(f"Upload at least {MIN_BASELINE} earlier flights to compare against.")
+        st.caption(f"Upload at least {MIN_BASELINE} earlier flights to compare with.")
     elif st.button("Run check", type="primary", key="chk-run"):
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
@@ -436,7 +436,7 @@ with tab_checks:
             try:
                 outcome = run_check(kind, paths[0], paths[1:], triage=want_triage)
             except Exception as e:  # a corrupt or unsupported log should not take the page down
-                outcome = CheckOutcome(error=f"Could not read these logs: {e}")
+                outcome = CheckOutcome(error=f"These logs could not be read: {e}")
         st.session_state["chk-result-upload"] = (outcome, kind)
     if "chk-result-upload" in st.session_state:
         shown_outcome, shown_kind = st.session_state["chk-result-upload"]
