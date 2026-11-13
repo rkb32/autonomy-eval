@@ -17,7 +17,7 @@ import streamlit.components.v1 as components
 
 from autonomy_eval import bisect as bisect_mod
 from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
-from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
+from autonomy_eval.compare import MIN_BASELINE, Comparison, Incomparable, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
 from autonomy_eval import flightdata
@@ -30,7 +30,7 @@ HISTORIES = {
     "Sailboat - 8 daily builds": "ardurover-surface-boat",
     "Ground rover - 8 daily builds": "ardurover-ground-rover",
 }
-STATUS_COLORS = {"REGRESSED": "#d62728", "changed": "#e08600", "ok": "#9aa0a6"}
+STATUS_COLORS = {"REGRESSED": "#E5484D", "changed": "#D9A441", "ok": "#8B929C"}
 SAMPLES = [
     ("sysid", "Run the stability sample (about 300 MB; the first run is slow)"),
     ("nees", "Run the estimator sample"),
@@ -60,6 +60,16 @@ button, [role="tab"] { transition: background-color .12s ease-out, border-color 
 .ae-keys { font-size: 0.85rem; opacity: 0.65; margin: 0 0 1rem; }
 .ae-keys kbd { font-family: ui-monospace, monospace; border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
   border-radius: 4px; padding: 0 0.3rem; }
+.ae-wordmark { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; margin: 0.25rem 0 0.4rem; }
+.ae-tagline { margin: 0 0 0.5rem; opacity: 0.85; max-width: 46rem; }
+.ae-facts { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.8rem; opacity: 0.6;
+  margin: 0 0 1.25rem; }
+[data-testid="stMetric"] { border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  border-radius: 0.5rem; padding: 0.7rem 0.9rem; }
+[data-testid="stMetricValue"] { font-variant-numeric: tabular-nums; }
+.ae-first { border-left: 3px solid #E5484D; padding: 0.1rem 0 0.1rem 0.75rem; margin: 0.9rem 0 1rem; }
+.ae-first-amber { border-left-color: #D9A441; }
+.ae-first-ok { border-left-color: #8B929C; }
 </style>
 """
 st.html(STYLE)
@@ -139,16 +149,16 @@ def metric_chart(results: list[Comparison], metric: str) -> alt.Chart:
     # on a zoomed axis, with the median of all runs as the "normal" line.
     x = alt.X("build:N", sort=None, title="firmware build, oldest to newest", axis=alt.Axis(labelAngle=-45))
     y = alt.Y("value:Q", title=label(metric), scale=alt.Scale(zero=False, padding=12))
-    line = alt.Chart(df).mark_line(color="#9aa0a6", strokeWidth=1).encode(x=x, y=y)
+    line = alt.Chart(df).mark_line(color="#8B929C", strokeWidth=1).encode(x=x, y=y)
     dots = alt.Chart(df).mark_circle(size=140, opacity=1).encode(
         x=x, y=y,
         color=alt.Color("flagged:N", scale=alt.Scale(domain=["normal", "flagged on this metric"],
-                                                     range=["#9aa0a6", "#d62728"]),
+                                                     range=["#8B929C", "#E5484D"]),
                         legend=alt.Legend(title=None, orient="top")),
         tooltip=["build", alt.Tooltip("value:Q", format=".4g"), "flagged"],
     )
     median = alt.Chart(pd.DataFrame({"median": [df["value"].median()]})).mark_rule(
-        strokeDash=[4, 4], color="#9aa0a6").encode(y="median:Q")
+        strokeDash=[4, 4], color="#8B929C").encode(y="median:Q")
     return (line + median + dots).properties(height=300)
 
 
@@ -288,11 +298,66 @@ def _thin(df: pd.DataFrame, limit: int = 4000) -> pd.DataFrame:
     return df.iloc[::step]
 
 
+def _fmt(value, spec: str) -> str:
+    return "n/a" if value is None else format(value, spec)
+
+
+def summary_markdown(runs: list[FlightSummary], bins: list, notes: list) -> str:
+    """Markdown summary: the comparison per vehicle, the fault checks and timing per log, and the notes."""
+    lines = ["# Autonomy-eval summary", ""]
+    groups: dict[tuple, list[FlightSummary]] = {}
+    for r in runs:
+        groups.setdefault((r.vehicle, r.mav_type), []).append(r)
+    for (vehicle, mav_type), group in groups.items():
+        lines.append(f"## {vehicle_kind(vehicle, mav_type)}: {len(group)} log(s)")
+        if len(group) <= MIN_BASELINE:
+            lines += [f"Needs more than {MIN_BASELINE} logs to compare.", ""]
+            continue
+        try:
+            results = scan(group)
+        except Incomparable as e:
+            lines += [f"Could not compare: {e}", ""]
+            continue
+        for c in results:
+            lines.append(f"- {c.candidate.label}: {status(c)} ({c.flag_count} flagged)")
+        lines.append("")
+    lines += ["## Checks per log", ""]
+    for f in bins:
+        data = f.getvalue()
+        lines.append(f"### {f.name}")
+        for row in fd_call(f.name, data, "fault_checks"):
+            lines.append(f"- {row['check']}: {row['status']} ({row['detail']})")
+        h = log_health(f.name, data)
+        if h is not None:
+            lines.append(f"- Timing: overruns {_fmt(h['overrun_pct'], '.2f')}%, "
+                         f"max loop {_fmt(h['max_loop_time'], '.0f')}, max CPU load {_fmt(h['max_cpu_load'], '.0f')}")
+        lines.append("")
+    if notes:
+        lines += ["## Notes", ""]
+        lines += [f"- {n['log']} {n['from (s)']:g} to {n['to (s)']:g} s: {n['note']}" for n in notes]
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 @st.fragment
 def views_section(bins: list) -> None:
     """Map, modes, outputs, firmware, fault checks, derived signals, rate tracking, spectrum, notes and summary."""
     st.subheader("More views")
     names = [f.name for f in bins]
+    with st.expander("Load a saved view"):
+        loaded = st.file_uploader("Choose a view file (JSON)", type=["json"], key="view-up")
+        if loaded is not None and st.session_state.get("view-applied") != loaded.file_id:
+            try:
+                saved = json.loads(loaded.getvalue())
+                if saved.get("log") in names:
+                    st.session_state["views-log"] = saved["log"]
+                st.session_state["views-msg"] = str(saved.get("msg", "BAT"))
+                st.session_state["views-expr"] = str(saved.get("expr", "Volt * Curr"))
+                st.session_state["notes"] = list(saved.get("notes", []))
+                st.session_state["view-applied"] = loaded.file_id
+                st.success("View loaded. Mode choices are not restored; pick them again if needed.")
+            except (ValueError, AttributeError, TypeError):
+                st.error("That file is not a saved view.")
     log_name = st.selectbox("Log for these views", names, key="views-log")
     data = next(f.getvalue() for f in bins if f.name == log_name)
     notes = st.session_state.setdefault("notes", [])
@@ -320,6 +385,9 @@ def views_section(bins: list) -> None:
                 if s[3] in keep:
                     mask |= (t >= s[0]) & (t < s[1])
             df = df[mask]
+        if len(df):
+            err = df["desired"].to_numpy() - df["measured"].to_numpy()
+            st.metric("RMS tracking error for the modes kept (rad/s)", f"{float(np.sqrt(np.mean(err ** 2))):.4f}")
         long = _thin(df).melt("t", var_name="series", value_name="rate (rad/s)")
         st.altair_chart(
             alt.Chart(long).mark_line(strokeWidth=1.2).encode(
@@ -417,28 +485,20 @@ def views_section(bins: list) -> None:
         st.download_button("Download notes (JSON)", json.dumps(notes, indent=1), file_name="notes.json",
                            mime="application/json", key="notes-dl")
 
-    with st.expander("Save or load a view, and download a summary"):
-        view = {"log": log_name, "modes": st.session_state.get("views-modes", []), "notes": notes}
+    with st.expander("Save this view, or download a summary"):
+        view = {"log": log_name, "msg": st.session_state.get("views-msg", "BAT"),
+                "expr": st.session_state.get("views-expr", "Volt * Curr"), "notes": notes}
         st.download_button("Download this view (JSON)", json.dumps(view, indent=1), file_name="view.json",
                            mime="application/json", key="view-dl")
-        loaded = st.file_uploader("Load a saved view (JSON)", type=["json"], key="view-up")
-        if loaded is not None:
-            try:
-                saved = json.loads(loaded.getvalue())
-                st.session_state["notes"] = list(saved.get("notes", []))
-                st.success(f"Loaded {len(st.session_state['notes'])} note(s). Choices such as the log and "
-                           "the modes are set again by hand.")
-            except (ValueError, AttributeError):
-                st.error("That file is not a saved view.")
-        runs = st.session_state.get("uploaded_runs", [])
-        if runs:
-            lines = ["# Autonomy-eval summary", "", f"Logs: {', '.join(r.label for r in runs)}", ""]
-            for r in runs:
-                lines.append(f"- {r.label}: {vehicle_kind(r.vehicle, r.mav_type)}")
-            lines += ["", "## Notes", ""] + [f"- {n['log']} {n['from (s)']:g} to {n['to (s)']:g} s: {n['note']}"
-                                              for n in notes]
-            st.download_button("Download summary (Markdown)", "\n".join(lines) + "\n",
-                               file_name="summary.md", mime="text/markdown", key="summary-dl")
+        if st.session_state.get("uploaded_runs"):
+            # Built only on request: it reads every uploaded log.
+            if st.button("Prepare the summary", key="summary-prep"):
+                st.session_state["summary_text"] = summary_markdown(st.session_state["uploaded_runs"], bins, notes)
+            if "summary_text" in st.session_state:
+                st.download_button("Download summary (Markdown)", st.session_state["summary_text"],
+                                   file_name="summary.md", mime="text/markdown", key="summary-dl")
+        else:
+            st.caption("Analyze uploaded logs first to include the comparison in the summary.")
 
 
 @st.fragment
@@ -550,21 +610,30 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
     df = scan_table(results)
     counts = {s: sum(status(c) == s for c in results) for s in ("REGRESSED", "changed", "ok")}
     worst = next((c.candidate.label for c in results if c.failed), results[0].candidate.label)
-    # One verdict line first; the table, chart and per-run detail below it are for checking the verdict.
+    # Three numbers first, then one sentence. The table, chart and per-run detail below are for checking them.
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Regressed", counts["REGRESSED"])
+    m2.metric("Changed", counts["changed"])
+    m3.metric("OK", counts["ok"])
     if counts["REGRESSED"]:
-        st.error(f"{counts['REGRESSED']} of {len(results)} builds regressed, starting with {worst}.")
+        st.html(f'<p class="ae-first">{counts["REGRESSED"]} of {len(results)} builds regressed. '
+                f'The first one is {worst}.</p>')
     elif counts["changed"]:
-        st.warning(f"Nothing regressed, but {counts['changed']} of {len(results)} builds changed on at least one metric.")
+        st.html(f'<p class="ae-first ae-first-amber">Nothing regressed. {counts["changed"]} of {len(results)} '
+                'builds changed on at least one metric.</p>')
     else:
-        st.success(f"Nothing regressed across the {len(results)} builds.")
+        st.html(f'<p class="ae-first ae-first-ok">Nothing regressed across the {len(results)} builds.</p>')
 
     only_changed = st.toggle("Show only builds that changed", key=f"{key}-only")
     shown = df[df["status"] != "ok"] if only_changed else df
     if shown.empty:
         st.caption("No build changed. Turn the filter off to see them all.")
     else:
-        st.table(shown.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600",
-                                 subset=["status"]).hide(axis="index"))
+        st.table(shown.style.map(
+            lambda v: (f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600; "
+                       f"background-color: {STATUS_COLORS.get(v, 'transparent')}33; border-radius: 999px; "
+                       "padding: 0 0.5rem") if v in STATUS_COLORS else "",
+            subset=["status"]).hide(axis="index"))
     with st.popover("What does normal mean?"):
         st.markdown(
             "\"Normal\" is the typical value across the other runs, one metric at a time (their median). "
@@ -575,12 +644,13 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
     detail_section(results, runs, key, default_metric, worst)
 
 
-st.title("Autonomy-eval")
-st.markdown(
-    "Autonomy-eval compares a flight log with earlier flights of the "
-    "same vehicle and flags anything outside their normal range. It shows whether a build flew worse than the ones before it."
+st.html(
+    '<div class="ae-wordmark">Autonomy-eval</div>'
+    '<p class="ae-tagline">Compares a flight log with earlier flights of the same vehicle, and flags anything '
+    "outside their normal range. It shows whether a build flew worse than the ones before it.</p>"
+    '<p class="ae-facts">ArduPilot CI history · 2 vehicles · 8 builds each</p>'
 )
-st.link_button("Source on GitHub", REPO)
+st.markdown(f"[Source on GitHub ↗]({REPO})")
 st.html('<p class="ae-keys">Press 1, 2 or 3 to switch tabs</p>')
 
 tab_ci, tab_upload, tab_checks = st.tabs(["Example result", "Check your logs", "Check one flight"])
