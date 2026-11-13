@@ -1,39 +1,37 @@
 [browser]
 gatherUsageStats = false
 
+# Neutral, report-style theme. Red is reserved for regressions (set in app.py), not for chrome.
 [theme]
-primaryColor = "#d62728"
-# Serif display headings over a sans body. "serif" and "sans-serif" are fonts bundled with
-# Streamlit (Source Serif / Source Sans), so nothing is fetched from a font CDN.
+primaryColor = "#475569"
 font = "sans-serif"
-headingFont = "serif"
-headingFontWeights = [600, 600, 600, 600, 600, 600]
+headingFont = "sans-serif"
 codeFont = "monospace"
-baseRadius = "0.5rem"
-buttonRadius = "0.5rem"
+baseRadius = "0.375rem"
+buttonRadius = "0.375rem"
 showWidgetBorder = true
 linkUnderline = false
 
 [theme.light]
-primaryColor = "#d62728"
-backgroundColor = "#fbfaf8"
-secondaryBackgroundColor = "#f2f0ec"
-textColor = "#1f1d1a"
-linkColor = "#c0201f"
-borderColor = "#e3e0da"
-dataframeBorderColor = "#e3e0da"
-dataframeHeaderBackgroundColor = "#f2f0ec"
-codeBackgroundColor = "#f2f0ec"
-codeTextColor = "#a3201f"
+primaryColor = "#334155"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f4f5"
+textColor = "#18181b"
+linkColor = "#334155"
+borderColor = "#e4e4e7"
+dataframeBorderColor = "#e4e4e7"
+dataframeHeaderBackgroundColor = "#f4f4f5"
+codeBackgroundColor = "#f4f4f5"
+codeTextColor = "#18181b"
 
 [theme.dark]
-primaryColor = "#d62728"
-backgroundColor = "#151413"
-secondaryBackgroundColor = "#1f1d1b"
-textColor = "#ece8e1"
-linkColor = "#ff6b6b"
-borderColor = "#2e2b28"
-dataframeBorderColor = "#2e2b28"
-dataframeHeaderBackgroundColor = "#1f1d1b"
-codeBackgroundColor = "#1f1d1b"
-codeTextColor = "#f0a6a0"
+primaryColor = "#cbd5e1"
+backgroundColor = "#0f1115"
+secondaryBackgroundColor = "#181b21"
+textColor = "#e4e4e7"
+linkColor = "#cbd5e1"
+borderColor = "#2a2e36"
+dataframeBorderColor = "#2a2e36"
+dataframeHeaderBackgroundColor = "#181b21"
+codeBackgroundColor = "#181b21"
+codeTextColor = "#e4e4e7"
