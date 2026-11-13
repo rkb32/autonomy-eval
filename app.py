@@ -18,6 +18,7 @@ from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
 from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
+from autonomy_eval.health import timing_health
 from autonomy_eval.signals import arm_time, list_signals, read_signal
 
 EXAMPLES = Path(__file__).parent / "examples"
@@ -38,9 +39,12 @@ st.set_page_config(page_title="Autonomy-eval", layout="centered")
 # Small visual layer: monospace numbers in tables, a quiet loading placeholder, and a keyboard hint.
 STYLE = """
 <style>
-[data-testid="stTable"] table { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.86rem; font-variant-numeric: tabular-nums; }
+[data-testid="stTable"] table { font-size: 0.9rem; font-variant-numeric: tabular-nums; }
 [data-testid="stTable"] td, [data-testid="stTable"] th { white-space: nowrap; }
+[data-testid="stTable"] th { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.03em;
+  text-transform: uppercase; opacity: 0.6; }
+[data-testid="stTable"] td { text-align: right; }
+[data-testid="stTable"] td:first-child, [data-testid="stTable"] th:first-child { text-align: left; }
 button, [role="tab"] { transition: background-color .12s ease-out, border-color .12s ease-out, color .12s ease-out; }
 .ae-skel { padding: 0.25rem 0 0.5rem; }
 .ae-skel p { margin: 0 0 0.6rem; font-size: 0.9rem; opacity: 0.7; }
@@ -239,6 +243,35 @@ def log_signal(name: str, data: bytes, msg: str, field: str):
 @st.cache_data(show_spinner=False)
 def log_arm_time(name: str, data: bytes):
     return in_temp_file(name, data, arm_time)
+
+
+@st.cache_data(show_spinner="Reading scheduler and IMU timing...")
+def log_health(name: str, data: bytes):
+    return in_temp_file(name, data, timing_health)
+
+
+@st.fragment
+def health_section(bins: list) -> None:
+    """Scheduler, log and IMU timing for each uploaded .bin log."""
+    st.subheader("Logging and timing health")
+    st.caption("For each log: how often the scheduler overran, how long its loops took, the logged CPU load, "
+               "dropped log blocks, and the worst gap in the IMU clock. A change here usually points at the "
+               "firmware rather than the tuning.")
+    rows = []
+    for f in bins:
+        h = log_health(f.name, f.getvalue())
+        if h is None:
+            continue
+        rows.append({"log": f.name, "loops overrun (%)": h["overrun_pct"], "max loop time": h["max_loop_time"],
+                     "max CPU load": h["max_cpu_load"], "dropped log blocks": h["dropped_blocks"],
+                     "worst IMU gap (x median)": h["worst_imu_gap"]})
+    if not rows:
+        st.info("None of these logs has scheduler (PM) messages, so timing health cannot be read.")
+        return
+    table = pd.DataFrame(rows).set_index("log").round(2)
+    st.table(table.style.format(na_rep="n/a"))
+    st.caption("On the simulated (SITL) logs we checked, CPU load stayed at 0, so the table looks healthy there. "
+               "Use logs from real hardware to see a real change in load.")
 
 
 @st.fragment
@@ -464,6 +497,7 @@ with tab_upload:
     bins = [f for f in (files or []) if f.name.lower().endswith(".bin")]
     if bins:
         signal_section(bins)
+        health_section(bins)
 
 with tab_checks:
     st.markdown(
