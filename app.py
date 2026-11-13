@@ -4,11 +4,13 @@
 """
 from __future__ import annotations
 
+import json
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import altair as alt
+import numpy as np
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -18,6 +20,7 @@ from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
 from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
+from autonomy_eval import flightdata
 from autonomy_eval.health import timing_health
 from autonomy_eval.signals import arm_time, list_signals, read_signal
 
@@ -274,6 +277,170 @@ def health_section(bins: list) -> None:
                "Use logs from real hardware to see a real change in load.")
 
 
+@st.cache_data(show_spinner="Reading the flight...")
+def fd_call(name: str, data: bytes, fn_name: str, args: tuple = ()):
+    """Run one flightdata reader on the uploaded bytes, cached per log and call."""
+    return in_temp_file(name, data, getattr(flightdata, fn_name), *args)
+
+
+def _thin(df: pd.DataFrame, limit: int = 4000) -> pd.DataFrame:
+    step = max(1, len(df) // limit)
+    return df.iloc[::step]
+
+
+@st.fragment
+def views_section(bins: list) -> None:
+    """Map, modes, outputs, firmware, fault checks, derived signals, rate tracking, spectrum, notes and summary."""
+    st.subheader("More views")
+    names = [f.name for f in bins]
+    log_name = st.selectbox("Log for these views", names, key="views-log")
+    data = next(f.getvalue() for f in bins if f.name == log_name)
+    notes = st.session_state.setdefault("notes", [])
+
+    with st.expander("Flight modes and the mode filter"):
+        segs = fd_call(log_name, data, "mode_segments")
+        if not segs:
+            st.info("This log has no MODE messages.")
+        else:
+            modes = list(dict.fromkeys(s[3] for s in segs))
+            keep = st.multiselect("Modes to keep in the rate chart", modes, default=modes, key="views-modes")
+            band = pd.DataFrame([{"start": s[0], "end": s[1], "mode": s[3]} for s in segs])
+            st.altair_chart(
+                alt.Chart(band).mark_rect(opacity=0.5).encode(
+                    x=alt.X("start:Q", title="time (s)"), x2="end:Q",
+                    color=alt.Color("mode:N", legend=alt.Legend(title=None, orient="top"))).properties(height=60),
+                width="stretch")
+
+    with st.expander("Roll rate: desired against measured"):
+        t, des, act = fd_call(log_name, data, "rate_tracking", ("R",))
+        df = pd.DataFrame({"t": t, "desired": des, "measured": act})
+        if segs and keep:
+            mask = np.zeros(t.size, dtype=bool)
+            for s in segs:
+                if s[3] in keep:
+                    mask |= (t >= s[0]) & (t < s[1])
+            df = df[mask]
+        long = _thin(df).melt("t", var_name="series", value_name="rate (rad/s)")
+        st.altair_chart(
+            alt.Chart(long).mark_line(strokeWidth=1.2).encode(
+                x=alt.X("t:Q", title="time (s)"), y=alt.Y("rate (rad/s):Q", scale=alt.Scale(zero=False)),
+                color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top"))).properties(height=260),
+            width="stretch")
+        st.caption("Only the modes chosen above are drawn. This shows how closely the roll rate follows its target; "
+                   "it does not estimate PID gains.")
+
+    with st.expander("Map of the track"):
+        lat, lng = fd_call(log_name, data, "gps_track")
+        if lat.size == 0:
+            st.info("No 3D GPS fix in this log.")
+        else:
+            st.map(_thin(pd.DataFrame({"lat": lat, "lon": lng}), 2000), size=4)
+            st.caption(f"{lat.size} GPS samples with a 3D fix or better.")
+
+    with st.expander("Motor and servo outputs"):
+        t, c = fd_call(log_name, data, "actuator_outputs")
+        if not c:
+            st.info("This log has no RCOU messages.")
+        else:
+            df = pd.DataFrame({"t": t, **c}).melt("t", var_name="channel", value_name="PWM (us)")
+            st.altair_chart(
+                alt.Chart(_thin(df)).mark_line(strokeWidth=1.2).encode(
+                    x=alt.X("t:Q", title="time (s)"), y=alt.Y("PWM (us):Q", scale=alt.Scale(zero=False)),
+                    color=alt.Color("channel:N", legend=alt.Legend(title=None, orient="top"))).properties(height=260),
+                width="stretch")
+
+    with st.expander("Firmware and parameters"):
+        info = fd_call(log_name, data, "firmware_info")
+        st.table(pd.DataFrame([{
+            "firmware": info["version"] or "not in log",
+            "parameters": info["parameters"],
+            "log length (s)": round(info["log_seconds"], 1),
+        }]).style.hide(axis="index"))
+
+    with st.expander("Fault checks"):
+        rows = fd_call(log_name, data, "fault_checks")
+        table = pd.DataFrame(rows)
+        st.table(table.style.map(
+            lambda v: "color: #E5484D; font-weight: 600" if v == "found"
+            else ("opacity: 0.55" if v == "not in log" else ""), subset=["status"]).hide(axis="index"))
+        st.caption("Each check uses a simple threshold: for example, a motor counts as saturated when it sits at "
+                   "1950 us or more on over 2% of spinning samples. The thresholds are starting points, not tuned.")
+
+    with st.expander("Derived signal"):
+        msg = st.text_input("Message type", "BAT", key="views-msg")
+        expr = st.text_input("Expression, using that message's fields", "Volt * Curr", key="views-expr")
+        try:
+            t, v = fd_call(log_name, data, "derived_signal", (msg, expr))
+            st.altair_chart(
+                alt.Chart(_thin(pd.DataFrame({"t": t, "value": v}))).mark_line(strokeWidth=1.2).encode(
+                    x=alt.X("t:Q", title="time (s)"), y=alt.Y("value:Q", title=expr, scale=alt.Scale(zero=False))
+                ).properties(height=260),
+                width="stretch")
+        except ValueError as e:
+            st.error(str(e))
+        st.caption("Allowed: numbers, the message's field names, + - * /, unary minus, abs() and sqrt(). "
+                   "Nothing else runs.")
+
+    with st.expander("Vibration spectrum (gyro)"):
+        picked = st.multiselect("Logs", names, default=[log_name], key="views-spec-logs")
+        frames, rates = [], []
+        for n in picked:
+            d = next(f.getvalue() for f in bins if f.name == n)
+            try:
+                f, p, fs = fd_call(n, d, "gyro_spectrum", ("GyrX",))
+            except ValueError as e:
+                st.warning(f"{n}: {e}")
+                continue
+            rates.append(f"{n}: {fs:.0f} Hz")
+            frames.append(pd.DataFrame({"frequency (Hz)": f, "power": p + 1e-20, "log": n}))
+        if frames:
+            st.altair_chart(
+                alt.Chart(pd.concat(frames)).mark_line(strokeWidth=1.2).encode(
+                    x=alt.X("frequency (Hz):Q"), y=alt.Y("power:Q", scale=alt.Scale(type="log"), title="power"),
+                    color=alt.Color("log:N", legend=alt.Legend(title=None, orient="top"))).properties(height=260),
+                width="stretch")
+            st.caption("IMU sample rates: " + "; ".join(rates) + ". A spectrum reaches only half its sample rate, "
+                       "so logs sampled at 25 Hz cannot show vibration above about 12 Hz.")
+
+    with st.expander("Notes on the timeline"):
+        c1, c2, c3 = st.columns([1, 1, 3])
+        start = c1.number_input("From (s)", min_value=0.0, value=0.0, step=1.0, key="note-start")
+        end = c2.number_input("To (s)", min_value=0.0, value=0.0, step=1.0, key="note-end")
+        text = c3.text_input("Note", key="note-text")
+        if st.button("Add note", key="note-add"):
+            if text and end > start:
+                notes.append({"log": log_name, "from (s)": start, "to (s)": end, "note": text})
+            else:
+                st.warning("A note needs text and an end time after the start time.")
+        if notes:
+            st.table(pd.DataFrame(notes).style.hide(axis="index"))
+        st.download_button("Download notes (JSON)", json.dumps(notes, indent=1), file_name="notes.json",
+                           mime="application/json", key="notes-dl")
+
+    with st.expander("Save or load a view, and download a summary"):
+        view = {"log": log_name, "modes": st.session_state.get("views-modes", []), "notes": notes}
+        st.download_button("Download this view (JSON)", json.dumps(view, indent=1), file_name="view.json",
+                           mime="application/json", key="view-dl")
+        loaded = st.file_uploader("Load a saved view (JSON)", type=["json"], key="view-up")
+        if loaded is not None:
+            try:
+                saved = json.loads(loaded.getvalue())
+                st.session_state["notes"] = list(saved.get("notes", []))
+                st.success(f"Loaded {len(st.session_state['notes'])} note(s). Choices such as the log and "
+                           "the modes are set again by hand.")
+            except (ValueError, AttributeError):
+                st.error("That file is not a saved view.")
+        runs = st.session_state.get("uploaded_runs", [])
+        if runs:
+            lines = ["# Autonomy-eval summary", "", f"Logs: {', '.join(r.label for r in runs)}", ""]
+            for r in runs:
+                lines.append(f"- {r.label}: {vehicle_kind(r.vehicle, r.mav_type)}")
+            lines += ["", "## Notes", ""] + [f"- {n['log']} {n['from (s)']:g} to {n['to (s)']:g} s: {n['note']}"
+                                              for n in notes]
+            st.download_button("Download summary (Markdown)", "\n".join(lines) + "\n",
+                               file_name="summary.md", mime="text/markdown", key="summary-dl")
+
+
 @st.fragment
 def signal_section(bins: list) -> None:
     """Plot one logged field over time, for one or several logs. A fragment, so the pickers do not rerun the page."""
@@ -498,6 +665,7 @@ with tab_upload:
     if bins:
         signal_section(bins)
         health_section(bins)
+        views_section(bins)
 
 with tab_checks:
     st.markdown(
