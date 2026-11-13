@@ -64,9 +64,12 @@ button, [role="tab"] { transition: background-color .12s ease-out, border-color 
 .ae-tagline { margin: 0 0 0.5rem; opacity: 0.85; max-width: 46rem; }
 .ae-facts { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.8rem; opacity: 0.6;
   margin: 0 0 1.25rem; }
-[data-testid="stMetric"] { border: 1px solid color-mix(in srgb, currentColor 12%, transparent);
-  border-radius: 0.5rem; padding: 0.7rem 0.9rem; }
-[data-testid="stMetricValue"] { font-variant-numeric: tabular-nums; }
+.ae-cards { display: flex; flex-wrap: wrap; gap: 2rem; margin: 0.5rem 0 1rem; }
+.ae-card { flex: 1 1 8rem; border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  padding-top: 0.6rem; }
+.ae-card-label { font-size: 0.8rem; opacity: 0.6; }
+.ae-card-value { font-size: 1.75rem; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.ae-card-context { font-size: 0.8rem; opacity: 0.55; }
 .ae-first { border-left: 3px solid #E5484D; padding: 0.1rem 0 0.1rem 0.75rem; margin: 0.9rem 0 1rem; }
 .ae-first-amber { border-left-color: #D9A441; }
 .ae-first-ok { border-left-color: #8B929C; }
@@ -605,16 +608,25 @@ def detail_section(results: list[Comparison], runs: list[FlightSummary], key: st
         show_detail(next(c for c in results if c.candidate.label == choice), runs)
 
 
+def stat_cards(regressed: int, changed: int, ok: int, total: int) -> None:
+    """Three plain numbers with their context. Only a non-zero regressed count is coloured."""
+    def card(label: str, value: int, color: str | None = None) -> str:
+        style = f' style="color: {color}"' if color else ""
+        return (f'<div class="ae-card"><div class="ae-card-label">{label}</div>'
+                f'<div class="ae-card-value"{style}>{value}</div>'
+                f'<div class="ae-card-context">of {total} builds</div></div>')
+    st.html('<div class="ae-cards">'
+            + card("Regressed", regressed, "#E5484D" if regressed else None)
+            + card("Changed", changed) + card("OK", ok) + "</div>")
+
+
 def results_section(runs: list[FlightSummary], key: str, default_metric: str | None = None) -> None:
     results = scan(runs)
     df = scan_table(results)
     counts = {s: sum(status(c) == s for c in results) for s in ("REGRESSED", "changed", "ok")}
     worst = next((c.candidate.label for c in results if c.failed), results[0].candidate.label)
     # Three numbers first, then one sentence. The table, chart and per-run detail below are for checking them.
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Regressed", counts["REGRESSED"])
-    m2.metric("Changed", counts["changed"])
-    m3.metric("OK", counts["ok"])
+    stat_cards(counts["REGRESSED"], counts["changed"], counts["ok"], len(results))
     if counts["REGRESSED"]:
         st.html(f'<p class="ae-first">{counts["REGRESSED"]} of {len(results)} builds regressed. '
                 f'The first one is {worst}.</p>')
@@ -629,11 +641,8 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
     if shown.empty:
         st.caption("No build changed. Turn the filter off to see them all.")
     else:
-        st.table(shown.style.map(
-            lambda v: (f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600; "
-                       f"background-color: {STATUS_COLORS.get(v, 'transparent')}33; border-radius: 999px; "
-                       "padding: 0 0.5rem") if v in STATUS_COLORS else "",
-            subset=["status"]).hide(axis="index"))
+        st.table(shown.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600",
+                                 subset=["status"]).hide(axis="index"))
     with st.popover("What does normal mean?"):
         st.markdown(
             "\"Normal\" is the typical value across the other runs, one metric at a time (their median). "
