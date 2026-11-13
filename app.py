@@ -18,6 +18,7 @@ from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
 from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
+from autonomy_eval.signals import list_signals, read_signal
 
 EXAMPLES = Path(__file__).parent / "examples"
 REPO = "https://github.com/rkb32/autonomy-eval"
@@ -170,7 +171,7 @@ def show_bisection(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
     else:
         st.caption(f"{len(b.suspects)} of {b.total_commits} commits touch related code:")
         for s in b.suspects:
-            st.markdown(f"- `{s.sha}` {s.message} — {', '.join(s.files)}")
+            st.markdown(f"- `{s.sha}` {s.message}: {', '.join(s.files)}")
     if b.ai:
         st.markdown(f"**AI read: {b.ai.label}.** {b.ai.reason}")
 
@@ -215,6 +216,53 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
 def cached_sample(kind: str) -> CheckOutcome:
     """Each visitor shares the result: the slow check runs once per sample, not once per visit."""
     return run_sample(kind)
+
+
+def in_temp_file(name: str, data: bytes, fn, *args):
+    """Run a reader that needs a file path, on the uploaded bytes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / Path(name).name
+        p.write_bytes(data)
+        return fn(p, *args)
+
+
+@st.cache_data(show_spinner="Reading the message list...")
+def log_signals(name: str, data: bytes) -> dict[str, list[str]]:
+    return in_temp_file(name, data, list_signals)
+
+
+@st.cache_data(show_spinner="Reading the signal from the log...")
+def log_signal(name: str, data: bytes, msg: str, field: str):
+    return in_temp_file(name, data, read_signal, msg, field)
+
+
+@st.fragment
+def signal_section(bins: list) -> None:
+    """Plot one logged field over time. A fragment, so changing the pickers does not rerun the page."""
+    st.subheader("Plot any signal")
+    st.caption("Pick a message and a field from one .bin log to see it over time. Text fields are left out.")
+    chosen = st.selectbox("Log", [f.name for f in bins], key="sig-log")
+    name, data = next((f.name, f.getvalue()) for f in bins if f.name == chosen)
+    signals = log_signals(name, data)
+    if not signals:
+        st.info("This log has no numeric messages with a clock.")
+        return
+    msg = st.selectbox("Message", list(signals), key="sig-msg")
+    field = st.selectbox("Field", signals[msg], key="sig-field")
+    t, v = log_signal(name, data, msg, field)
+    if not t:
+        st.info(f"{msg} has no samples for {field} in this log.")
+        return
+    step = max(1, len(t) // 4000)     # about 4000 points is plenty to see a signal, and keeps the page light
+    df = pd.DataFrame({"t": t[::step], "value": v[::step]})
+    chart = alt.Chart(df).mark_line(strokeWidth=1.3, color="#64748b").encode(
+        x=alt.X("t:Q", title="time (s)"),
+        y=alt.Y("value:Q", title=f"{msg}.{field}", scale=alt.Scale(zero=False)),
+        tooltip=[alt.Tooltip("t:Q", title="time (s)", format=".1f"),
+                 alt.Tooltip("value:Q", title=f"{msg}.{field}", format=".4g")],
+    ).properties(height=280)
+    st.altair_chart(chart, width="stretch")
+    st.caption(f"{len(t)} samples" + (f", every {step}th one plotted" if step > 1 else "") + ".")
 
 
 def regression_text(outcome: CheckOutcome) -> str:
@@ -299,11 +347,11 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
 
 st.title("Autonomy-eval")
 st.markdown(
-    "Did this build fly worse than the ones before it? Autonomy-eval compares a flight log with earlier flights of the "
-    "same vehicle and flags anything that falls outside the normal range. Most ArduPilot log tools look at one flight at a time, so they cannot say whether a build got worse."
+    "Autonomy-eval compares a flight log with earlier flights of the "
+    "same vehicle and flags anything outside their normal range. It shows whether a build flew worse than the ones before it."
 )
 st.link_button("Source on GitHub", REPO)
-st.html('<p class="ae-keys">Press <kbd>1</kbd>, <kbd>2</kbd> or <kbd>3</kbd> to switch tabs</p>')
+st.html('<p class="ae-keys">Press 1, 2 or 3 to switch tabs</p>')
 
 tab_ci, tab_upload, tab_checks = st.tabs(["Example result", "Check your logs", "Check one flight"])
 
@@ -324,10 +372,10 @@ with tab_ci:
     if folder == "ardurover-surface-boat":
         st.markdown(
             "**What happened in build bf080274:** the boat tacked one extra time, which alone explains "
-            "the 13 extra seconds and the worse tracking. The \"possible cause\" above (found automatically, "
-            "not written by hand) agrees: the one commit it flags only relocates a parameter table, not "
-            "control logic, so the likely cause is the simulator making a different tack decision: a "
-            "flaky test, not a firmware bug."
+            "the 13 extra seconds and the worse tracking. The \"possible cause\" above was found automatically, "
+            "not written by hand, and it agrees. The one commit it flags only moves a parameter table and does not "
+            "change control logic. So the likely cause is that the simulator made a different tack decision. "
+            "That is a flaky test, not a firmware bug."
         )
     else:
         st.markdown(
@@ -383,6 +431,9 @@ with tab_upload:
             st.warning(f"Upload more than {MIN_BASELINE} logs of this vehicle to compare them.")
             continue
         results_section(group, key=f"upload-{vehicle}-{mav_type}")
+    bins = [f for f in (files or []) if f.name.lower().endswith(".bin")]
+    if bins:
+        signal_section(bins)
 
 with tab_checks:
     st.markdown(
