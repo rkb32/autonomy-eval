@@ -11,6 +11,7 @@ from pathlib import Path
 import altair as alt
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from autonomy_eval import bisect as bisect_mod
 from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
@@ -31,7 +32,53 @@ SAMPLES = [
     ("step", "Run step response sample"),
 ]
 
-st.set_page_config(page_title="autonomy-eval", layout="centered")
+st.set_page_config(page_title="Autonomy-eval", layout="centered")
+
+# Small visual layer: monospace numbers in tables, a quiet loading placeholder, and a keyboard hint.
+STYLE = """
+<style>
+[data-testid="stTable"] table { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86rem; font-variant-numeric: tabular-nums; }
+[data-testid="stTable"] td, [data-testid="stTable"] th { white-space: nowrap; }
+button, [role="tab"] { transition: background-color .12s ease-out, border-color .12s ease-out, color .12s ease-out; }
+.ae-skel { padding: 0.25rem 0 0.5rem; }
+.ae-skel p { margin: 0 0 0.6rem; font-size: 0.9rem; opacity: 0.7; }
+.ae-skel span { display: block; height: 0.9rem; margin: 0.55rem 0; border-radius: 4px;
+  background: color-mix(in srgb, currentColor 10%, transparent); animation: ae-pulse 1.2s ease-in-out infinite; }
+.ae-skel span:nth-of-type(2) { width: 80%; }
+.ae-skel span:nth-of-type(3) { width: 55%; }
+@keyframes ae-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .ae-skel span { animation: none; } }
+.ae-keys { font-size: 0.85rem; opacity: 0.65; margin: 0 0 1rem; }
+.ae-keys kbd { font-family: ui-monospace, monospace; border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 4px; padding: 0 0.3rem; }
+</style>
+"""
+st.html(STYLE)
+
+# Keys 1-3 switch tabs. The script runs in a hidden component and attaches one listener to the page.
+KEYS_JS = """
+<script>
+(function () {
+  const doc = window.parent.document;
+  if (doc.__aeKeysBound) return;
+  doc.__aeKeysBound = true;
+  doc.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && t.closest && t.closest("input, textarea, select, [contenteditable='true'], [role='listbox'], [role='combobox']")) return;
+    const n = parseInt(e.key, 10);
+    const tabs = doc.querySelectorAll('[data-testid="stTabs"] [role="tab"]');
+    if (n >= 1 && n <= tabs.length) { tabs[n - 1].click(); e.preventDefault(); }
+  });
+})();
+</script>
+"""
+components.html(KEYS_JS, height=0)
+
+
+def skeleton(text: str) -> str:
+    return f'<div class="ae-skel" role="status"><p>{text}</p><span></span><span></span><span></span></div>'
 
 
 def label(metric: str) -> str:
@@ -128,6 +175,16 @@ def show_bisection(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         st.markdown(f"**AI read: {b.ai.label}.** {b.ai.reason}")
 
 
+def findings_table(c: Comparison) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
+        "what": label(f.metric),
+        "this run": f.value,
+        "normal (median)": f.median,
+        "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
+    } for f in c.findings])
+
+
 def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
     cand = c.candidate
     st.markdown(f"**{cand.label}** ({vehicle_kind(cand.vehicle, cand.mav_type)}), compared against "
@@ -138,13 +195,7 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         st.success("No regressions: every metric is within the normal range of the other runs.")
         return
     if c.findings:
-        st.dataframe(pd.DataFrame([{
-            "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
-            "what": label(f.metric),
-            "this run": f.value,
-            "normal (median)": f.median,
-            "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
-        } for f in c.findings]), hide_index=True, width="stretch")
+        st.table(findings_table(c).style.hide(axis="index"))
     if c.regressions:
         show_bisection(c, ordered_runs)
     if c.new_alarms:
@@ -194,15 +245,26 @@ def show_check(outcome: CheckOutcome, kind: str) -> None:
     if outcome.note:
         st.caption(outcome.note)
     if c.findings:
-        st.dataframe(pd.DataFrame([{
-            "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
-            "what": label(f.metric),
-            "this run": f.value,
-            "normal (median)": f.median,
-            "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
-        } for f in c.findings]), hide_index=True, width="stretch")
+        st.table(findings_table(c).style.hide(axis="index"))
     for w in c.warnings:
         st.caption(f"note: {w}")
+
+
+@st.fragment
+def detail_section(results: list[Comparison], runs: list[FlightSummary], key: str,
+                   default_metric: str | None, worst: str) -> None:
+    """Chart and per-run detail. A fragment, so changing a selector does not rerun the whole page."""
+    labels = [c.candidate.label for c in results]
+    flagged_metrics = [f.metric for c in results for f in c.findings if not f.metric.startswith("event:")]
+    metrics = sorted({m for r in runs for m in r.metrics})
+    default = default_metric or (flagged_metrics[0] if flagged_metrics else "armed_time_s")
+    with st.expander("Chart and run detail"):
+        metric = st.selectbox("Compare one metric across runs", metrics,
+                              index=metrics.index(default) if default in metrics else 0,
+                              format_func=label, key=f"{key}-metric")
+        st.altair_chart(metric_chart(results, metric), width="stretch")
+        choice = st.selectbox("Look at one run in detail", labels, index=labels.index(worst), key=f"{key}-detail")
+        show_detail(next(c for c in results if c.candidate.label == choice), runs)
 
 
 def results_section(runs: list[FlightSummary], key: str, default_metric: str | None = None) -> None:
@@ -212,33 +274,36 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
     worst = next((c.candidate.label for c in results if c.failed), results[0].candidate.label)
     # One verdict line first; the table, chart and per-run detail below it are for checking the verdict.
     if counts["REGRESSED"]:
-        st.error(f"{counts['REGRESSED']} of {len(results)} builds regressed. Start with {worst}, selected below.")
+        st.error(f"{counts['REGRESSED']} of {len(results)} builds regressed. The first one is {worst}.")
     elif counts["changed"]:
         st.warning(f"No regressions. {counts['changed']} of {len(results)} builds changed on at least one metric.")
     else:
         st.success(f"No regressions in {len(results)} builds.")
-    st.dataframe(
-        df.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600", subset=["status"]),
-        hide_index=True, width="stretch",
-    )
-    flagged_metrics = [f.metric for c in results for f in c.findings if not f.metric.startswith("event:")]
-    metrics = sorted({m for r in runs for m in r.metrics})
-    default = default_metric or (flagged_metrics[0] if flagged_metrics else "armed_time_s")
-    metric = st.selectbox("Compare one metric across runs", metrics,
-                          index=metrics.index(default) if default in metrics else 0,
-                          format_func=label, key=f"{key}-metric")
-    st.altair_chart(metric_chart(results, metric), width="stretch")
-    labels = [c.candidate.label for c in results]
-    choice = st.selectbox("Look at one run in detail", labels, index=labels.index(worst), key=f"{key}-detail")
-    show_detail(next(c for c in results if c.candidate.label == choice), runs)
+
+    only_changed = st.toggle("Only builds that changed", key=f"{key}-only")
+    shown = df[df["status"] != "ok"] if only_changed else df
+    if shown.empty:
+        st.caption("No build changed. Turn the filter off to see all builds.")
+    else:
+        st.table(shown.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600",
+                                 subset=["status"]).hide(axis="index"))
+    with st.popover("What does normal mean?"):
+        st.markdown(
+            "Normal is compared against the other runs, metric by metric, using their median. "
+            "A metric is flagged when this run moves outside the range those runs show."
+        )
+    st.download_button("Download builds (CSV)", data=df.to_csv(index=False).encode("utf-8"),
+                       file_name=f"{key}-builds.csv", mime="text/csv", key=f"{key}-csv")
+    detail_section(results, runs, key, default_metric, worst)
 
 
-st.title("autonomy-eval")
+st.title("Autonomy-eval")
 st.markdown(
     "Did this build fly worse than the earlier ones? This compares a flight log against earlier flights of the "
     "same vehicle and flags anything outside the normal range. Most ArduPilot log tools look at one flight at a time."
 )
 st.link_button("Source on GitHub", REPO)
+st.html('<p class="ae-keys">Keys: <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> switch tabs</p>')
 
 tab_ci, tab_upload, tab_checks = st.tabs(["Example result", "Check your logs", "Check one flight"])
 
@@ -247,8 +312,13 @@ with tab_ci:
         "ArduPilot's CI reruns the same test missions on every firmware build and publishes the telemetry. "
         "Each build is compared against the other seven."
     )
-    history = st.radio("History", list(HISTORIES), horizontal=True, label_visibility="collapsed")
+    # A shared link can open a given history: ?history=ardurover-ground-rover
+    linked = st.query_params.get("history")
+    start = next((k for k, v in HISTORIES.items() if v == linked), next(iter(HISTORIES)))
+    history = st.segmented_control("History", list(HISTORIES), default=start, key="ci-history",
+                                   label_visibility="collapsed") or start
     folder = HISTORIES[history]
+    st.query_params["history"] = folder
     results_section(load_history(folder), key=folder,
                     default_metric="armed_time_s" if folder == "ardurover-surface-boat" else None)
     if folder == "ardurover-surface-boat":
@@ -277,7 +347,7 @@ with tab_upload:
     )
     files = st.file_uploader("Flight logs", type=["tlog", "bin", "json"], accept_multiple_files=True)
     if not files:
-        st.info("No logs yet? The Example result tab shows the same comparison on real build history.")
+        st.info("No logs yet? The Example result tab (key 1) shows the same comparison on real build history.")
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):
         runs, failed = [], []
         progress = st.progress(0.0, text="Reading logs...")
@@ -320,7 +390,8 @@ with tab_checks:
         "raw DataFlash `.bin` logs, and each needs a flight made for it: a SystemID chirp for stability margins, "
         "a SITL run with ground truth for the estimator, or GUIDED position steps for the step response."
     )
-    kind = st.radio("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0], horizontal=True, key="chk-kind")
+    kind = st.segmented_control("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0],
+                                default=next(iter(CHECKS)), key="chk-kind") or next(iter(CHECKS))
     st.caption(CHECKS[kind][1])
 
     st.subheader("Try a sample flight")
@@ -329,12 +400,15 @@ with tab_checks:
         if st.button(button_text, key=f"chk-sample-{sample_kind}"):
             wait = ("Downloading about 300 MB, first run only..." if sample_kind == "sysid"
                     else "Downloading the sample flights, first run only...")
-            with st.spinner(wait):
-                try:
-                    st.session_state[f"chk-result-{sample_kind}"] = cached_sample(sample_kind)
-                except Exception as e:  # no network, or a bad download, should not take the page down
-                    st.session_state[f"chk-result-{sample_kind}"] = CheckOutcome(
-                        error=f"Could not load the sample flights: {e}")
+            slot = st.empty()
+            slot.html(skeleton(wait))
+            try:
+                st.session_state[f"chk-result-{sample_kind}"] = cached_sample(sample_kind)
+                st.toast(f"{CHECKS[sample_kind][0]} sample ready")
+            except Exception as e:  # no network, or a bad download, should not take the page down
+                st.session_state[f"chk-result-{sample_kind}"] = CheckOutcome(
+                    error=f"Could not load the sample flights: {e}")
+            slot.empty()
         if f"chk-result-{sample_kind}" in st.session_state:
             st.markdown(f"**Sample: {CHECKS[sample_kind][0]}**")
             show_check(st.session_state[f"chk-result-{sample_kind}"], sample_kind)
@@ -373,13 +447,13 @@ with tab_checks:
             "ArduPilot records every flight twice: telemetry sent to the ground station (`.tlog`) and the "
             "autopilot's own onboard log (`.bin`). The same two flights, read both ways:"
         )
-        st.dataframe(pd.DataFrame([
+        st.table(pd.DataFrame([
             {"": "time armed (s)", "boat .bin": 107.3, "boat .tlog": 107.0, "rover .bin": 243.1, "rover .tlog": 243.0},
             {"": "mean cross-track error (m)", "boat .bin": 1.400, "boat .tlog": 1.405, "rover .bin": 0.598, "rover .tlog": 0.600},
             {"": "worst cross-track error (m)", "boat .bin": 4.381, "boat .tlog": 4.381, "rover .bin": 2.959, "rover .tlog": 2.959},
             {"": "lowest battery (V)", "boat .bin": 11.90, "boat .tlog": 11.90, "rover .bin": 12.53, "rover .tlog": 12.53},
             {"": "in-flight mode changes", "boat .bin": 0, "boat .tlog": 0, "rover .bin": 17, "rover .tlog": 17},
-        ]), hide_index=True, width="stretch")
+        ]).style.hide(axis="index"))
         st.markdown(
             "Where they disagree, the cause is known: DataFlash stores EKF variances at 0.01 resolution; "
             "the `.bin` catches a half-second arm/disarm that 1 Hz telemetry misses; and DataFlash has error "
