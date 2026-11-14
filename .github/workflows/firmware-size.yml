@@ -51,6 +51,21 @@ jobs:
           echo "/opt/gcc-arm-none-eabi-10-2020-q4-major/bin" >> "$GITHUB_PATH"
           /opt/gcc-arm-none-eabi-10-2020-q4-major/bin/arm-none-eabi-gcc --version | head -n 1
 
+      - name: Fetch submodules for both refs
+        # The compare script only runs "git submodule update" without --init, so a submodule
+        # that one ref registers (Copter-4.5 has modules/CrashDebug; master does not) is never
+        # cloned for it. Initialise both refs here, before the script runs.
+        working-directory: ardupilot
+        env:
+          BASE: ${{ inputs.base }}
+          HEAD: ${{ inputs.head }}
+        run: |
+          set -e
+          git checkout "$HEAD"
+          git submodule update --init --recursive
+          git checkout "$BASE"
+          git submodule update --init --recursive
+
       - name: Compare the two builds
         working-directory: ardupilot
         env:
