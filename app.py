@@ -20,7 +20,7 @@ from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
 from autonomy_eval.compare import MIN_BASELINE, Comparison, Incomparable, scan, vehicle_kind
 from autonomy_eval.metrics import FlightSummary, load
 from autonomy_eval.report import LABELS, SEVERITY
-from autonomy_eval import flightdata
+from autonomy_eval import batch, flightdata
 from autonomy_eval.health import timing_health
 from autonomy_eval.signals import arm_time, list_signals, read_signal
 
@@ -458,11 +458,16 @@ def views_section(bins: list) -> None:
         for n in picked:
             d = next(f.getvalue() for f in bins if f.name == n)
             try:
-                f, p, fs = fd_call(n, d, "gyro_spectrum", ("GyrX",))
-            except ValueError as e:
-                st.warning(f"{n}: {e}")
-                continue
-            rates.append(f"{n}: {fs:.0f} Hz")
+                f, p, fs = in_temp_file(n, d, batch.batch_spectrum, 0)
+                source = "sensor-rate batches"
+            except ValueError:
+                try:
+                    f, p, fs = fd_call(n, d, "gyro_spectrum", ("GyrX",))
+                    source = "IMU, 50 Hz"
+                except ValueError as e:
+                    st.warning(f"{n}: {e}")
+                    continue
+            rates.append(f"{n}: {fs:.0f} Hz, {source}")
             frames.append(pd.DataFrame({"frequency (Hz)": f, "power": p + 1e-20, "log": n}))
         if frames:
             st.altair_chart(
@@ -470,8 +475,9 @@ def views_section(bins: list) -> None:
                     x=alt.X("frequency (Hz):Q"), y=alt.Y("power:Q", scale=alt.Scale(type="log"), title="power"),
                     color=alt.Color("log:N", legend=alt.Legend(title=None, orient="top"))).properties(height=260),
                 width="stretch")
-            st.caption("IMU sample rates: " + "; ".join(rates) + ". A spectrum reaches only half its sample rate, "
-                       "so logs sampled at 25 Hz cannot show vibration above about 12 Hz.")
+            st.caption("Sample rates: " + "; ".join(rates) + ". A spectrum reaches only half its sample rate. "
+                       "Batch blocks alternate gyro and accel, so the gyro is sampled about half the time. "
+                       "Logs without batches use the 50 Hz IMU stream, which shows up to 25 Hz.")
 
     with st.expander("Notes on the timeline"):
         c1, c2, c3 = st.columns([1, 1, 3])
