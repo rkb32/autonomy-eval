@@ -45,6 +45,17 @@ jobs:
         working-directory: ardupilot
         run: Tools/environment_install/install-prereqs-ubuntu.sh -y
 
+      - name: Put the ARM toolchain on PATH for later steps
+        run: |
+          echo "/opt/gcc-arm-none-eabi-10-2020-q4-major/bin" >> "$GITHUB_PATH"
+          /opt/gcc-arm-none-eabi-10-2020-q4-major/bin/arm-none-eabi-gcc --version | head -n 1
+
+      - name: Configure the board (shows waf errors)
+        working-directory: ardupilot
+        env:
+          BOARD: ${{ inputs.board }}
+        run: ./waf configure --board "$BOARD" --consistent-builds
+
       - name: Compare the two builds
         working-directory: ardupilot
         env:
