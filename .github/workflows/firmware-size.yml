@@ -56,6 +56,17 @@ jobs:
           BOARD: ${{ inputs.board }}
         run: ./waf configure --board "$BOARD" --consistent-builds
 
+      - name: Build the head branch visibly (shows compile errors)
+        working-directory: ardupilot
+        env:
+          HEAD: ${{ inputs.head }}
+          BOARD: ${{ inputs.board }}
+        run: |
+          git checkout "$HEAD"
+          git submodule update --init --recursive
+          ./waf configure --board "$BOARD" --consistent-builds
+          ./waf copter
+
       - name: Compare the two builds
         working-directory: ardupilot
         env:
