@@ -719,13 +719,14 @@ with tab_ci:
 with tab_upload:
     st.markdown(f"To compare runs, upload at least {MIN_BASELINE + 1} logs of the **same vehicle and mission**.")
     st.markdown(
-        "- **Formats:** MAVLink telemetry (`.tlog`), ArduPilot DataFlash logs (`.bin`), or summaries saved by "
-        "`autonomy-eval summarize -o` (`.json`).\n"
+        "- **Formats:** MAVLink telemetry (`.tlog`), ArduPilot DataFlash logs (`.bin`), PX4 ULog logs (`.ulg`), "
+        "or summaries saved by `autonomy-eval summarize -o` (`.json`). PX4 logs compare only the signals both "
+        "autopilots record: armed time, battery, GPS, flight mode and messages.\n"
         "- **Oldest build first.** The possible cause of a regression comes from the commits between it and the "
         "build just before it.\n"
         "- **Private:** your files are read into memory for this session only and are never kept."
     )
-    files = st.file_uploader("Flight logs", type=["tlog", "bin", "json"], accept_multiple_files=True)
+    files = st.file_uploader("Flight logs", type=["tlog", "bin", "ulg", "json"], accept_multiple_files=True)
     if not files:
         st.info("No logs yet? The Example result tab (press 1) shows the same comparison on real build history.")
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):

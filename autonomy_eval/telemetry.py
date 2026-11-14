@@ -121,9 +121,17 @@ def is_dataflash(path: str | Path) -> bool:
         return f.read(3) == b"\xa3\x95\x80"   # DataFlash message header + the FMT message id
 
 
+def is_ulog(path: str | Path) -> bool:
+    with open(path, "rb") as f:
+        return f.read(5) == b"ULog\x01"   # PX4 ULog file header
+
+
 def read(path: str | Path) -> Iterator[Record]:
     if is_dataflash(path):
         from .dataflash import read_dataflash
         return read_dataflash(str(path))
+    if is_ulog(path):
+        from .ulog import read_ulog      # needs pyulog; imported only for PX4 logs
+        return read_ulog(path)
     from .tlog import read_tlog
     return read_tlog(str(path))

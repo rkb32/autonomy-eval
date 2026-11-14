@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Iterable
 
-from .telemetry import Armed, Corrupt, Mode, Param, Reboot, Record, Sample, Text, VehicleType, is_dataflash, read
+from .telemetry import Armed, Corrupt, Mode, Param, Reboot, Record, Sample, Text, VehicleType, is_dataflash, is_ulog, read
 
 INFO, DEBUG = 6, 7  # MAV_SEVERITY levels; text with no severity is treated as INFO
 GRACE_S = 1.0     # heartbeats are 1 Hz, so the armed flag can lag the arm message by up to a second
@@ -99,7 +99,12 @@ def in_intervals(t: float, intervals: list[tuple[float, float]], grace: float = 
 
 def summarize(path: str | Path) -> FlightSummary:
     s = summarize_records(read(path), str(path))
-    s.quality["format"] = "dataflash" if is_dataflash(path) else "tlog"
+    if is_ulog(path):
+        from .ulog import identity
+        s.vehicle, s.firmware = identity(path)
+        s.quality["format"] = "ulog"
+    else:
+        s.quality["format"] = "dataflash" if is_dataflash(path) else "tlog"
     return s
 
 

@@ -14,6 +14,7 @@ sysid = ["scipy>=1.10"]
 dev = ["pytest>=8"]
 demo = ["streamlit>=1.51", "anthropic>=1.0"]
 bisect = ["anthropic>=1.0"]
+px4 = ["pyulog>=1.3"]
 
 [project.scripts]
 autonomy-eval = "autonomy_eval.cli:main"
