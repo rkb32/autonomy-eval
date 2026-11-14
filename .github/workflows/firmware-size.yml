@@ -2,6 +2,7 @@
 #
 # Run it by hand from the Actions tab (workflow_dispatch). It checks out ArduPilot, builds the chosen
 # board and vehicle at both commits, and uploads a CSV of the .bin size differences as an artifact.
+# The full script output is kept too (raw.log), so a failed build can be read from the artifact.
 # The web demo does not read this yet; publishing the CSV into the repo is a separate step.
 
 name: Firmware size (two ArduPilot commits)
@@ -50,23 +51,6 @@ jobs:
           echo "/opt/gcc-arm-none-eabi-10-2020-q4-major/bin" >> "$GITHUB_PATH"
           /opt/gcc-arm-none-eabi-10-2020-q4-major/bin/arm-none-eabi-gcc --version | head -n 1
 
-      - name: Configure the board (shows waf errors)
-        working-directory: ardupilot
-        env:
-          BOARD: ${{ inputs.board }}
-        run: ./waf configure --board "$BOARD" --consistent-builds
-
-      - name: Build the head branch visibly (shows compile errors)
-        working-directory: ardupilot
-        env:
-          HEAD: ${{ inputs.head }}
-          BOARD: ${{ inputs.board }}
-        run: |
-          git checkout "$HEAD"
-          git submodule update --init --recursive
-          ./waf configure --board "$BOARD" --consistent-builds
-          ./waf copter
-
       - name: Compare the two builds
         working-directory: ardupilot
         env:
@@ -75,16 +59,22 @@ jobs:
           BOARD: ${{ inputs.board }}
           VEHICLE: ${{ inputs.vehicle }}
         run: |
+          set -o pipefail
           python3 Tools/scripts/size_compare_branches.py \
             --branch "$HEAD" \
             --master-branch "$BASE" \
             --board "$BOARD" \
             --vehicle "$VEHICLE" \
-            --no-merge-base > "$GITHUB_WORKSPACE/size.csv"
+            --no-merge-base 2>&1 | tee "$GITHUB_WORKSPACE/raw.log"
+          # keep only the CSV table; the script also prints progress lines before it
+          awk '/^Board,/{f=1} f' "$GITHUB_WORKSPACE/raw.log" > "$GITHUB_WORKSPACE/size.csv"
           cat "$GITHUB_WORKSPACE/size.csv"
 
-      - name: Upload the size table
+      - name: Upload the size table and the full log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: firmware-size-${{ inputs.board }}-${{ inputs.vehicle }}
-          path: size.csv
+          path: |
+            size.csv
+            raw.log
