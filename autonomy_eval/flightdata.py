@@ -238,6 +238,33 @@ def rate_tracking(path: str | Path, axis: str = "R"):
     return t, c[desired], c[axis]
 
 
+def param_value(path: str | Path, name: str) -> float | None:
+    """Value of one logged parameter (PARM message), or None if the log doesn't hold it."""
+    from pymavlink import DFReader
+
+    reader = DFReader.DFReader_binary(str(path), zero_time_base=True)
+    try:
+        while True:
+            m = reader.recv_match(type="PARM")
+            if m is None:
+                return None
+            if m.Name == name:
+                return float(m.Value)
+    finally:
+        reader.close()
+
+
+def roll_tracking_summary(path: str | Path) -> dict:
+    """Roll-rate tracking for one log: RMS of desired minus measured roll rate (deg/s), the logged
+    ATC_RAT_RLL_P gain, and the number of RATE samples used."""
+    _, desired, measured = rate_tracking(path, "R")
+    err = np.asarray(desired, dtype=float) - np.asarray(measured, dtype=float)
+    if err.size == 0:
+        raise ValueError("no roll-rate samples in this log")
+    return {"rms": float(np.sqrt(np.mean(err ** 2))), "gain": param_value(path, "ATC_RAT_RLL_P"),
+            "samples": int(err.size)}
+
+
 def gyro_spectrum(path: str | Path, axis: str = "GyrX"):
     """(frequency Hz, power, sample rate Hz) for the first IMU instance. The top frequency is half the sample rate."""
     from scipy.signal import welch

@@ -479,6 +479,23 @@ def views_section(bins: list) -> None:
                        "Batch blocks alternate gyro and accel, so the gyro is sampled about half the time. "
                        "Logs without batches use the 50 Hz IMU stream, which shows up to 25 Hz.")
 
+    with st.expander("Roll-rate tracking by gain"):
+        picked_g = st.multiselect("Logs", names, default=[log_name], key="views-gain-logs")
+        rows = []
+        for n in picked_g:
+            d = next(f.getvalue() for f in bins if f.name == n)
+            try:
+                s = fd_call(n, d, "roll_tracking_summary")
+            except ValueError as e:
+                st.warning(f"{n}: {e}")
+                continue
+            rows.append({"log": n, "ATC_RAT_RLL_P": s["gain"], "roll error RMS (deg/s)": round(s["rms"], 3),
+                         "RATE samples": s["samples"]})
+        if rows:
+            st.table(pd.DataFrame(rows))
+            st.caption("Lower RMS means the roll rate followed its command more closely. "
+                       "One run per gain shows a direction, not a fitted optimum.")
+
     with st.expander("Notes on the timeline"):
         c1, c2, c3 = st.columns([1, 1, 3])
         start = c1.number_input("From (s)", min_value=0.0, value=0.0, step=1.0, key="note-start")
