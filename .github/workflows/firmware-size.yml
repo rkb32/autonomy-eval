@@ -1,0 +1,68 @@
+# Firmware size for two ArduPilot commits, using ArduPilot's own size_compare_branches.py.
+#
+# Run it by hand from the Actions tab (workflow_dispatch). It checks out ArduPilot, builds the chosen
+# board and vehicle at both commits, and uploads a CSV of the .bin size differences as an artifact.
+# The web demo does not read this yet; publishing the CSV into the repo is a separate step.
+
+name: Firmware size (two ArduPilot commits)
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "ArduPilot commit or branch to compare from (the master side)"
+        required: true
+        default: master
+      head:
+        description: "ArduPilot commit or branch to compare to (the branch side)"
+        required: true
+      board:
+        description: "Board name from ArduPilot's hwdef files, for example CubeOrange"
+        required: true
+        default: CubeOrange
+      vehicle:
+        description: "Vehicle to build: copter, plane, rover or sub"
+        required: true
+        default: copter
+
+permissions:
+  contents: read
+
+jobs:
+  size:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    steps:
+      - name: Check out ArduPilot
+        uses: actions/checkout@v4
+        with:
+          repository: ArduPilot/ardupilot
+          fetch-depth: 0
+          submodules: recursive
+          path: ardupilot
+
+      - name: Install build prerequisites
+        working-directory: ardupilot
+        run: Tools/environment_install/install-prereqs-ubuntu.sh -y
+
+      - name: Compare the two builds
+        working-directory: ardupilot
+        env:
+          BASE: ${{ inputs.base }}
+          HEAD: ${{ inputs.head }}
+          BOARD: ${{ inputs.board }}
+          VEHICLE: ${{ inputs.vehicle }}
+        run: |
+          python3 Tools/scripts/size_compare_branches.py \
+            --branch "$HEAD" \
+            --master-branch "$BASE" \
+            --board "$BOARD" \
+            --vehicle "$VEHICLE" \
+            --no-merge-base > "$GITHUB_WORKSPACE/size.csv"
+          cat "$GITHUB_WORKSPACE/size.csv"
+
+      - name: Upload the size table
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-size-${{ inputs.board }}-${{ inputs.vehicle }}
+          path: size.csv
