@@ -18,7 +18,7 @@ import streamlit.components.v1 as components
 from autonomy_eval import bisect as bisect_mod
 from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
 from autonomy_eval.compare import MIN_BASELINE, Comparison, Incomparable, scan, vehicle_kind
-from autonomy_eval.metrics import FlightSummary, load
+from autonomy_eval.metrics import METRIC_SERIES, FlightSummary, load, timeline, timeline_band
 from autonomy_eval.report import LABELS, SEVERITY
 from autonomy_eval import batch, flightdata
 from autonomy_eval.health import timing_health
@@ -206,6 +206,43 @@ def findings_table(c: Comparison) -> pd.DataFrame:
     } for f in c.findings])
 
 
+def first_seen(cand: FlightSummary, text: str) -> str:
+    t = cand.event_first.get(text)
+    return "" if t is None else f" (first at {t:g} s into the flight)"
+
+
+def timeline_chart(c: Comparison, metric: str):
+    """The candidate's signal through the flight, with the band the baseline runs span."""
+    name = METRIC_SERIES[metric]
+    cand = getattr(c.candidate, "series", {}).get(name)
+    baselines = [s for s in (getattr(b, "series", {}).get(name) for b in c.baseline) if s]
+    if not cand or len(baselines) < 2:
+        return None
+    line, band = timeline_band(cand, baselines)
+    area = alt.Chart(pd.DataFrame(band, columns=["seconds", "low", "high"])).mark_area(
+        opacity=0.25, color="#888888").encode(
+        x=alt.X("seconds:Q", title="seconds since arming"), y=alt.Y("low:Q", title=label(metric)), y2="high:Q")
+    trace = alt.Chart(pd.DataFrame(line, columns=["seconds", "value"])).mark_line(color="#d62728").encode(
+        x="seconds:Q", y="value:Q")
+    return (area + trace).properties(height=260)
+
+
+def show_timeline(c: Comparison) -> None:
+    options = [f.metric for f in c.findings if f.metric in METRIC_SERIES]
+    if not options:
+        return
+    if not getattr(c.candidate, "series", None):
+        st.caption("The flight timeline needs the raw log; this run came from a saved summary.")
+        return
+    metric = st.selectbox("Flagged metric through the flight", options, format_func=label,
+                          key=f"timeline-{c.candidate.source}")
+    chart = timeline_chart(c, metric)
+    if chart is None:
+        st.caption("Not enough baseline logs with this signal to draw the band.")
+    else:
+        st.altair_chart(chart, width="stretch")
+
+
 def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
     cand = c.candidate
     st.markdown(f"**{cand.label}** ({vehicle_kind(cand.vehicle, cand.mav_type)}), compared with "
@@ -217,14 +254,16 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         return
     if c.findings:
         st.table(findings_table(c).style.hide(axis="index"))
+        show_timeline(c)
     if c.regressions:
         show_bisection(c, ordered_runs)
     if c.new_alarms:
         st.error("These warnings or errors have never appeared in the other runs:\n\n" +
-                 "\n".join(f"- [{SEVERITY[m.severity]}] {m.text}" for m in c.new_alarms))
+                 "\n".join(f"- [{SEVERITY[m.severity]}] {m.text}{first_seen(cand, m.text)}" for m in c.new_alarms))
     info = [m for m in c.new_messages if not m.alarming]
     if info:
-        st.info("New messages (for information only):\n\n" + "\n".join(f"- {m.text}" for m in info))
+        st.info("New messages (for information only):\n\n" +
+                "\n".join(f"- {m.text}{first_seen(cand, m.text)}" for m in info))
     if c.missing_messages:
         st.info("Messages that appear in every other run but are missing here:\n\n" +
                 "\n".join(f"- {m}" for m in c.missing_messages))
@@ -747,6 +786,11 @@ with tab_upload:
                 except Exception as e:  # a corrupt or unsupported upload should not take the page down
                     failed.append(f"{f.name}: {e}")
                 else:
+                    if not f.name.lower().endswith(".json"):
+                        try:
+                            s.series = timeline(path)
+                        except Exception:  # the summary still works without the timeline
+                            s.series = {}
                     if s.vehicle is None and s.mav_type is None:
                         failed.append(f"{f.name}: no autopilot found in it (not a flight log?)")
                     else:
@@ -854,3 +898,42 @@ with tab_checks:
             "the `.bin` catches a half-second arm/disarm that 1 Hz telemetry misses; and DataFlash has error "
             f"records telemetry doesn't carry. [Full output]({REPO}/blob/main/docs/cross-format-check.txt)"
         )
+
+# Layout patterns taken from the design libraries' pages (no code copied): a pill label, a bold headline,
+# a soft glow behind the content, and link cards with a hover lift.
+DESIGN_CARDS = [
+    ("Magic UI", "Bold headline with a soft glow behind it", "https://magicui.design"),
+    ("21st.dev", "Ranked gallery with a category sidebar", "https://21st.dev"),
+    ("React Bits", "Animated backgrounds used as the hero", "https://reactbits.dev"),
+    ("Refero", "A DESIGN.md file that describes a whole style", "https://styles.refero.design"),
+]
+st.markdown(
+    """
+    <style>
+    .dr-wrap { position: relative; padding: 2.5rem 0 1rem; text-align: center; }
+    .dr-glow { position: absolute; inset: 0; z-index: -1;
+               background: radial-gradient(60% 50% at 50% 30%, rgba(99,102,241,.25), transparent 70%); }
+    .dr-pill { display: inline-block; padding: .25rem .8rem; border: 1px solid rgba(128,128,128,.35);
+               border-radius: 999px; font-size: .8rem; opacity: .85; }
+    .dr-title { font-size: 2.2rem; font-weight: 700; margin: .8rem 0 .3rem; line-height: 1.15; }
+    .dr-sub { opacity: .75; margin-bottom: 1.5rem; }
+    .dr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .8rem; }
+    .dr-card { display: block; text-align: left; padding: 1rem; border-radius: 12px; text-decoration: none;
+               border: 1px solid rgba(128,128,128,.3); color: inherit; transition: transform .15s, border-color .15s; }
+    .dr-card:hover { transform: translateY(-3px); border-color: rgba(99,102,241,.8); }
+    .dr-card b { display: block; margin-bottom: .3rem; }
+    .dr-card span { font-size: .9rem; opacity: .8; }
+    </style>
+    <div class="dr-wrap"><div class="dr-glow"></div>
+      <span class="dr-pill">Design references</span>
+      <div class="dr-title">Patterns from design libraries</div>
+      <div class="dr-sub">Taken from the pages of UI libraries built for design engineers.</div>
+      <div class="dr-grid">
+    """
+    + "".join(
+        f'<a class="dr-card" href="{url}" target="_blank"><b>{name}</b><span>{pattern}</span></a>'
+        for name, pattern, url in DESIGN_CARDS
+    )
+    + "</div></div>",
+    unsafe_allow_html=True,
+)
