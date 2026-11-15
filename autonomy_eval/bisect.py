@@ -72,7 +72,13 @@ class Bisection:
 
 
 def _get(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": "autonomy-eval", "Accept": "application/vnd.github+json"})
+    headers = {"User-Agent": "autonomy-eval", "Accept": "application/vnd.github+json"}
+    # Unauthenticated calls are limited to 60 an hour; a token raises that to 5000. It is read from the
+    # environment only, so it is never written to a file or a commit.
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers=headers)
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.load(r)
 
