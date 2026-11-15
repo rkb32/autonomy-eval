@@ -54,7 +54,8 @@ class FlightSummary:
 
     @property
     def label(self) -> str:
-        return self.firmware or Path(self.source).stem
+        # A title is set by the app when several runs share a firmware label, so each one can still be told apart.
+        return getattr(self, "title", None) or self.firmware or Path(self.source).stem
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=1, sort_keys=True)

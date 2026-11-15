@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -803,6 +804,10 @@ with tab_upload:
         st.caption(f"Read {len(runs)} of {len(files)} files" + (f"; {len(failed)} could not be read." if failed else "."))
         for msg in failed:
             st.warning(f"Could not read {msg}")
+        shared = Counter(r.label for r in runs)
+        for r in runs:
+            if shared[r.label] > 1:  # PX4 logs often share one firmware label; the file name tells them apart
+                r.title = f"{r.label} · {r.source}"
         st.session_state["uploaded_runs"] = runs
     if not files:
         st.session_state.pop("uploaded_runs", None)   # cleared files must clear the old results too
