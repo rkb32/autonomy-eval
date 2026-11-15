@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from autonomy_eval import metrics
-from autonomy_eval.telemetry import Armed, Sample, is_ulog
+from autonomy_eval import ulog as ulog_mod
+from autonomy_eval.telemetry import Armed, Sample, Text, is_ulog
 
 SAMPLE = Path(os.environ.get("TEMP", "")) / "autonomy-eval-samples" / "px4-quadrotor-example.ulg"
 needs_sample = pytest.mark.skipif(not SAMPLE.exists(), reason="no PX4 sample log in the temp cache")
@@ -70,3 +71,60 @@ def test_no_armed_flag_survives_json_round_trip():
     s = metrics.summarize_records([Sample(1.0, "batt", 15.0)], "x.ulg")
     back = metrics.FlightSummary.from_json(s.to_json())
     assert back.quality.get("no_armed_state") == 1.0
+
+
+class _Data:
+    def __init__(self, name, multi_id, data):
+        self.name, self.multi_id, self.data = name, multi_id, data
+
+
+class _Msg:
+    def __init__(self, timestamp, log_level, message):
+        self.timestamp, self.log_level, self.message = timestamp, log_level, message
+
+
+class _FakeULog:
+    def __init__(self, data_list, tagged=None):
+        self.data_list = data_list
+        self.start_timestamp = 0
+        self.logged_messages = []
+        self.logged_messages_tagged = tagged or {}
+
+
+def _read_fake(monkeypatch, fake):
+    monkeypatch.setattr(ulog_mod, "ULog", lambda *a, **k: fake)
+    return list(ulog_mod.read_ulog("x.ulg"))
+
+
+def test_every_battery_instance_counts(monkeypatch):
+    bat0 = _Data("battery_status", 0, {"timestamp": [1_000_000, 2_000_000], "connected": [True, True],
+                                        "voltage_v": [15.0, 14.9]})
+    bat1 = _Data("battery_status", 1, {"timestamp": [1_000_000, 2_000_000], "connected": [True, True],
+                                        "voltage_v": [12.0, 11.8]})
+    records = _read_fake(monkeypatch, _FakeULog([bat0, bat1]))
+    batt = [r.value for r in records if isinstance(r, Sample) and r.name == "batt"]
+    assert min(batt) == 11.8          # the second battery's reading is in the minimum
+
+
+def test_connected_battery_with_unknown_voltage_is_ignored(monkeypatch):
+    bat0 = _Data("battery_status", 0, {"timestamp": [1_000_000], "connected": [True], "voltage_v": [15.0]})
+    bat1 = _Data("battery_status", 1, {"timestamp": [1_000_000], "connected": [True], "voltage_v": [0.0]})
+    records = _read_fake(monkeypatch, _FakeULog([bat0, bat1]))
+    batt = [r.value for r in records if isinstance(r, Sample) and r.name == "batt"]
+    assert batt == [15.0]             # the 0 V reading is unknown, not a real minimum
+
+
+def test_gps_without_a_3d_fix_is_skipped(monkeypatch):
+    gps = _Data("vehicle_gps_position", 0, {"timestamp": [1_000_000, 2_000_000, 3_000_000],
+                                             "fix_type": [0, 2, 3], "satellites_used": [0, 6, 10],
+                                             "hdop": [99.0, 1.5, 1.0]})
+    records = _read_fake(monkeypatch, _FakeULog([gps]))
+    sats = [r.value for r in records if isinstance(r, Sample) and r.name == "sats"]
+    assert sats == [10.0]             # only the 3D-fix reading remains
+
+
+def test_tagged_messages_are_read_as_text(monkeypatch):
+    tagged = {7: [_Msg(3_000_000, ord("4"), "tagged warning")]}
+    records = _read_fake(monkeypatch, _FakeULog([], tagged=tagged))
+    texts = [r for r in records if isinstance(r, Text)]
+    assert [(r.severity, r.text) for r in texts] == [(4, "tagged warning")]

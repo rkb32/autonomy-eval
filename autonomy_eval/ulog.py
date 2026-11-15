@@ -73,7 +73,8 @@ def read_ulog(path: str | Path) -> Iterator[Record]:
     for battery in (d for d in log.data_list if d.name == "battery_status"):
         d = battery.data
         for i, us in enumerate(d["timestamp"]):
-            if d["connected"][i]:
+            # PX4 reports 0 V when the voltage is unknown; that must not set the minimum.
+            if d["connected"][i] and float(d["voltage_v"][i]) > 0:
                 records.append(Sample(sec(us), "batt", float(d["voltage_v"][i])))
 
     for gps in (d for d in log.data_list if d.name == "vehicle_gps_position"):
@@ -87,6 +88,9 @@ def read_ulog(path: str | Path) -> Iterator[Record]:
 
     for m in log.logged_messages:
         records.append(Text(sec(m.timestamp), _level(m.log_level), m.message))
+    # Tagged messages (pyulog: dict of tag -> list) are logged the same way, with a tag added.
+    for tagged in (m for group in log.logged_messages_tagged.values() for m in group):
+        records.append(Text(sec(tagged.timestamp), _level(tagged.log_level), tagged.message))
 
     records.sort(key=lambda r: r.t)
     yield from records
