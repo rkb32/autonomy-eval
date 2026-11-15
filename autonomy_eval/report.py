@@ -57,6 +57,8 @@ def render(c: Comparison) -> str:
     out += [f"  note: {w}" for w in c.warnings]
     if cand.quality.get("corrupt_frames"):
         out.append(f"  note: {cand.quality['corrupt_frames']} corrupt telemetry frames skipped while reading")
+    if cand.quality.get("no_armed_state"):
+        out.append("  note: no arming records in this log, so armed time and flight count are not reliable")
     if not c.flag_count:
         out.append("\nno regressions: every metric is within the normal range of the baseline")
         return "\n".join(out)

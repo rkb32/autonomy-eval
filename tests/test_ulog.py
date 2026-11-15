@@ -64,3 +64,9 @@ def test_log_without_arming_records_is_flagged():
 def test_log_with_arming_records_is_not_flagged():
     s = metrics.summarize_records([Armed(1.0, True), Armed(5.0, False)], "x.ulg")
     assert "no_armed_state" not in s.quality
+
+
+def test_no_armed_flag_survives_json_round_trip():
+    s = metrics.summarize_records([Sample(1.0, "batt", 15.0)], "x.ulg")
+    back = metrics.FlightSummary.from_json(s.to_json())
+    assert back.quality.get("no_armed_state") == 1.0
