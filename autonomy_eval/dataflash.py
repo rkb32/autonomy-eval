@@ -34,6 +34,9 @@ TEXT_SEVERITY_RULES = [
     (re.compile(r"^EKF.*\b(bad|unhealthy|lost)\b", re.I), WARNING),
     (re.compile(r"\berror\b", re.I), ERROR),
     (re.compile(r"\bwarning\b", re.I), WARNING),
+    (re.compile(r"\bfailed\b", re.I), WARNING),     # e.g. "Flight mode change failed"
+    (re.compile(r"\btimeout\b", re.I), WARNING),    # e.g. "Fence upload timeout"
+    (re.compile(r"\bnot received\b", re.I), WARNING),  # e.g. "target not received last N secs, stopping"
 ]
 
 

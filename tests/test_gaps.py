@@ -20,6 +20,16 @@ def test_crash_is_critical_and_error_wording_is_error():
     assert text_severity("Error in sensor init") == ERROR
 
 
+def test_failed_timeout_and_lost_target_are_warnings():
+    assert text_severity("Flight mode change failed") == WARNING
+    assert text_severity("Fence upload timeout") == WARNING
+    assert text_severity("target not received last 5 secs, stopping") == WARNING
+
+
+def test_routine_wheel_message_gets_no_severity():
+    assert text_severity("WheelEncoder: wheel offset not set!") is None
+
+
 def test_plain_text_gets_no_severity():
     assert text_severity("Hello from the rover") is None
 
