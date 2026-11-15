@@ -1,15 +1,17 @@
 name: Collect CI .bin logs
 
 # Saves the ArduPilot autotest .BIN logs for two tests each day, so there is a real .bin baseline.
-# The server overwrites these logs daily, so a missed day cannot be fetched again. Each run is kept as
-# an artifact for 5 days. Scheduled runs only fire from the default branch.
+# The server overwrites these logs daily, so a missed day cannot be fetched again. Each day's logs
+# go into one zip attached to the release "ci-bin-collection", which does not expire. The log numbers
+# are sequence numbers, so each day's zip is a full snapshot, dated in its name. Scheduled runs only
+# fire from the default branch.
 on:
   schedule:
     - cron: "17 6 * * *"   # 06:17 UTC daily
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   collect:
@@ -31,11 +33,18 @@ jobs:
           echo "run date (UTC): $(date -u +%F)" > bin/_run.txt
           echo "total size: $(du -sh bin | cut -f1)"
 
-      - name: Save the logs as an artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ci-bin-${{ github.run_id }}
-          path: |
-            bin/
-            manifest.sha256
-          retention-days: 5
+      - name: Attach the day's logs to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          day="$(date -u +%F)"
+          zipfile="ci-bin-$day.zip"
+          (cd bin && zip -qr "../$zipfile" . -x '*.zip') && zip -q "$zipfile" manifest.sha256
+          tag="ci-bin-collection"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" \
+            --title "CI .bin collection" \
+            --notes "Daily snapshots of the ArduPilot autotest .BIN logs for Rover-Scripting and ArduCopter-TerrainFailsafe. One zip per day; each zip is a full snapshot with a sha256 manifest." \
+            --latest=false
+          gh release upload "$tag" "$zipfile" --clobber
+          ls -l "$zipfile"
