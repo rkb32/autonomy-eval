@@ -42,9 +42,10 @@ jobs:
           zipfile="ci-bin-$day.zip"
           (cd bin && zip -qr "../$zipfile" . -x '*.zip') && zip -q "$zipfile" manifest.sha256
           tag="ci-bin-collection"
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" \
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "CI .bin collection" \
             --notes "Daily snapshots of the ArduPilot autotest .BIN logs for Rover-Scripting and ArduCopter-TerrainFailsafe. One zip per day; each zip is a full snapshot with a sha256 manifest." \
             --latest=false
-          gh release upload "$tag" "$zipfile" --clobber
+          gh release upload "$tag" "$zipfile" --repo "$GITHUB_REPOSITORY" --clobber
           ls -l "$zipfile"
