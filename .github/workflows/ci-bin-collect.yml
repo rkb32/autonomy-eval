@@ -1,0 +1,41 @@
+name: Collect CI .bin logs
+
+# Saves the ArduPilot autotest .BIN logs for two tests each day, so there is a real .bin baseline.
+# The server overwrites these logs daily, so a missed day cannot be fetched again. Each run is kept as
+# an artifact for 5 days. Scheduled runs only fire from the default branch.
+on:
+  schedule:
+    - cron: "17 6 * * *"   # 06:17 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download the day's Rover-Scripting and TerrainFailsafe logs
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          curl -fsS --retry 3 -m 120 -o index.html https://autotest.ardupilot.org/
+          grep -oE 'Rover-Scripting-[0-9]{8}\.BIN|ArduCopter-TerrainFailsafe-[0-9]{8}\.BIN' index.html | sort -u > files.txt
+          echo "files listed: $(wc -l < files.txt)"
+          while read -r f; do
+            curl -fsS --retry 3 -m 120 -o "bin/$f" "https://autotest.ardupilot.org/$f"
+          done < files.txt
+          cp files.txt bin/_listing.txt
+          (cd bin && sha256sum *.BIN > ../manifest.sha256)
+          echo "run date (UTC): $(date -u +%F)" > bin/_run.txt
+          echo "total size: $(du -sh bin | cut -f1)"
+
+      - name: Save the logs as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-bin-${{ github.run_id }}
+          path: |
+            bin/
+            manifest.sha256
+          retention-days: 5
