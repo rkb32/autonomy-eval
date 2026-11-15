@@ -745,6 +745,8 @@ with tab_upload:
                         failed.append(f"{f.name}: no autopilot found in it (not a flight log?)")
                     else:
                         s.source = f.name
+                        if s.quality.get("no_armed_state"):
+                            st.warning(f"{f.name} has no arming records, so its armed time and flight count are not reliable.")
                         runs.append(s)
                 progress.progress((i + 1) / len(files), text=f"Read {f.name}")
         progress.empty()

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from autonomy_eval import metrics
-from autonomy_eval.telemetry import is_ulog
+from autonomy_eval.telemetry import Armed, Sample, is_ulog
 
 SAMPLE = Path(os.environ.get("TEMP", "")) / "autonomy-eval-samples" / "px4-quadrotor-example.ulg"
 needs_sample = pytest.mark.skipif(not SAMPLE.exists(), reason="no PX4 sample log in the temp cache")
@@ -54,3 +54,13 @@ def test_sample_has_no_arducopter_only_metrics():
     s = metrics.summarize(SAMPLE)
     for name in ("xtrack_mean_m", "vibe_p95", "att_err_p95_deg", "ekf_vel_var_p95"):
         assert name not in s.metrics
+
+
+def test_log_without_arming_records_is_flagged():
+    s = metrics.summarize_records([Sample(1.0, "batt", 15.0), Sample(2.0, "batt", 14.9)], "x.ulg")
+    assert s.quality.get("no_armed_state") == 1.0
+
+
+def test_log_with_arming_records_is_not_flagged():
+    s = metrics.summarize_records([Armed(1.0, True), Armed(5.0, False)], "x.ulg")
+    assert "no_armed_state" not in s.quality

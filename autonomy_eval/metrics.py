@@ -118,6 +118,7 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
     sats: list[float] = []
     batt: list[float] = []
     clip = corrupt = reboots = 0
+    saw_armed = False      # a log with no arming records has no armed time, so the flight count means nothing
     end = 0.0
 
     for rec in records:
@@ -141,6 +142,7 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
         elif isinstance(rec, Param):
             s.params[rec.name] = rec.value            # the last value wins: that is what it ended up flying with
         elif isinstance(rec, Armed):
+            saw_armed = True
             if rec.armed and not armed:
                 armed_since = t
             elif armed and not rec.armed:
@@ -210,6 +212,8 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
     s.preflight = sorted(preflight)
     s.severity = dict(sorted(severity.items()))
     s.quality = {"log_duration_s": round(end, 1), "corrupt_frames": corrupt}
+    if not saw_armed:
+        s.quality["no_armed_state"] = 1.0
     return s
 
 
