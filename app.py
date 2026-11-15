@@ -305,6 +305,12 @@ def _fmt(value, spec: str) -> str:
     return "n/a" if value is None else format(value, spec)
 
 
+def log_numbers(runs: list[FlightSummary]) -> pd.DataFrame:
+    """Each log's own numbers, one column per log, for when there are too few logs to compare."""
+    names = sorted({k for r in runs for k in r.metrics})
+    return pd.DataFrame({r.source: {label(k): r.metrics.get(k) for k in names} for r in runs})
+
+
 def summary_markdown(runs: list[FlightSummary], bins: list, notes: list) -> str:
     """Markdown summary: the comparison per vehicle, the fault checks and timing per log, and the notes."""
     lines = ["# Autonomy-eval summary", ""]
@@ -763,7 +769,8 @@ with tab_upload:
     for (vehicle, mav_type), group in groups.items():
         st.subheader(f"{vehicle_kind(vehicle, mav_type)}: {len(group)} log(s)")
         if len(group) <= MIN_BASELINE:
-            st.warning(f"Upload more than {MIN_BASELINE} logs of this vehicle to compare them.")
+            st.warning(f"Upload more than {MIN_BASELINE} logs of this vehicle to compare them. Each log's own numbers are below.")
+            st.dataframe(log_numbers(group))
             continue
         results_section(group, key=f"upload-{vehicle}-{mav_type}")
     bins = [f for f in (files or []) if f.name.lower().endswith(".bin")]
