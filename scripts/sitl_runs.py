@@ -13,6 +13,7 @@ Needs Docker, a volume with ArduPilot built for SITL (default name: ardupilot-sr
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import shutil
 import subprocess
@@ -32,12 +33,22 @@ def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["docker", *args], capture_output=True, text=True, check=check)
 
 
+def container_user() -> list[str]:
+    # The container writes logs/ and terrain/ into the run dir. As root, those stay root-owned, and the
+    # cleanup (which runs as the host user) cannot delete them. On POSIX hosts the container runs as the
+    # host user instead. HOME points at the run dir, since a uid with no passwd entry may get HOME=/.
+    # Windows (Docker Desktop) keeps root.
+    if hasattr(os, "getuid"):
+        return ["--user", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/runs"]
+    return ["--user", "root"]
+
+
 def fly(params: list[str], speedup: int, volume: str, image: str, run_dir: Path, name: str, attempts: int = 4,
         script: str = "sitl_fly.py", timeout: int = 600) -> bool:
     # Every attempt gets a fresh SITL: a retry on a container that already ran would not be the same flight.
     for attempt in range(attempts):
         docker("rm", "-f", name, check=False)
-        docker("run", "-d", "--name", name, "--user", "root", "-p", f"127.0.0.1:{PORT}:{PORT}",
+        docker("run", "-d", "--name", name, *container_user(), "-p", f"127.0.0.1:{PORT}:{PORT}",
                "-v", f"{volume}:/ardupilot", "-v", f"{run_dir.resolve()}:/runs", "-w", "/runs", image,
                "/ardupilot/build/sitl/bin/arducopter", "--model", "+", "--speedup", str(speedup),
                "--defaults", "/ardupilot/Tools/autotest/default_params/copter.parm", "--home", HOME, "-I0")
@@ -101,6 +112,8 @@ def main() -> int:
             failed += 1
             print(f"  run {i} produced no usable log", flush=True)
         shutil.rmtree(run_dir, ignore_errors=True)
+        if run_dir.exists():                           # leftovers used to pass silently into the artifact
+            print(f"  warning: could not remove {run_dir}", flush=True)
     print(f"done: {args.runs - failed}/{args.runs} logs in {args.out}")
     return 1 if failed else 0
 
