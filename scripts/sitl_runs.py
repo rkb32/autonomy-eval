@@ -5,6 +5,7 @@ the detector can be tested against regressions whose size and cause are known.
 
   python scripts/sitl_runs.py --runs 8 --out runs/baseline
   python scripts/sitl_runs.py --runs 8 --out runs/vibe --param SIM_VIB_MOT_MAX=30
+  python scripts/sitl_runs.py --runs 3 --out runs/varied --vary
 
 Needs Docker, a volume with ArduPilot built for SITL (default name: ardupilot-src, built with
 `./waf configure --board sitl && ./waf copter`), and pymavlink on the host.
@@ -12,6 +13,7 @@ Needs Docker, a volume with ArduPilot built for SITL (default name: ardupilot-sr
 from __future__ import annotations
 
 import argparse
+import random
 import shutil
 import subprocess
 import sys
@@ -21,6 +23,9 @@ from pathlib import Path
 HERE = Path(__file__).parent
 HOME = "-35.363261,149.165230,584,353"
 PORT = 5760
+# --vary: each flight gets its own random values in these ranges (a guess, not measured).
+# SIM_GPS_NOISE adds noise to simulated GPS altitude only.
+VARY = {"SIM_WIND_SPD": (1.0, 6.0), "SIM_WIND_DIR": (0.0, 360.0), "SIM_GPS_NOISE": (0.0, 1.0)}
 
 
 def docker(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -63,19 +68,32 @@ def main() -> int:
     ap.add_argument("--image", default="ardupilot/ardupilot-dev-base@sha256:d81c02a9d86ea88b297a66910a6a1f077e8c14cd9ad10e1620b44033e8e371bf")
     ap.add_argument("--flight", default="sitl_fly.py", help="flight script in scripts/ (e.g. sitl_step.py)")
     ap.add_argument("--timeout", type=int, default=600, help="wall-clock cap per flight, seconds")
+    ap.add_argument("--vary", action="store_true", help="random wind speed/direction and GPS noise per flight")
+    ap.add_argument("--seed", type=int, default=1, help="seed for --vary: the same seed gives the same flights")
     args = ap.parse_args()
     if Path(args.flight).name != args.flight or not (HERE / args.flight).is_file():
         ap.error(f"--flight must be the name of a script in scripts/, got {args.flight!r}")
 
     args.out.mkdir(parents=True, exist_ok=True)
+    rng = random.Random(args.seed)
+    manifest = ["run," + ",".join(VARY)]           # written to variation.csv, so each run's values are on record
     failed = 0
     for i in range(1, args.runs + 1):
         run_dir = args.out / f"work{i:02d}"
         shutil.rmtree(run_dir, ignore_errors=True)
         run_dir.mkdir(parents=True)
         print(f"run {i}/{args.runs}", flush=True)
-        ok = fly(args.param, args.speedup, args.volume, args.image, run_dir, f"sitl-runs-{i}", script=args.flight,
-                 timeout=args.timeout)
+        extra, values = [], []
+        if args.vary:
+            for name, (lo, hi) in VARY.items():
+                value = round(rng.uniform(lo, hi), 2)
+                extra.append(f"{name}={value}")
+                values.append(str(value))
+            manifest.append(",".join([f"run{i:02d}", *values]))
+            (args.out / "variation.csv").write_text("\n".join(manifest) + "\n")
+            print("  varied:", " ".join(extra), flush=True)
+        ok = fly(args.param + extra, args.speedup, args.volume, args.image, run_dir, f"sitl-runs-{i}",
+                 script=args.flight, timeout=args.timeout)
         logs = sorted((run_dir / "logs").glob("*.BIN"), key=lambda p: p.stat().st_size, reverse=True)
         if ok and logs:
             shutil.copy(logs[0], args.out / f"run{i:02d}.BIN")

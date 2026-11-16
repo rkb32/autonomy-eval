@@ -44,7 +44,7 @@ jobs:
       - name: Fly the mission and keep every log
         run: |
           set -euo pipefail
-          python scripts/sitl_runs.py --runs "${{ inputs.runs }}" --out runs/g4
+          python scripts/sitl_runs.py --runs "${{ inputs.runs }}" --out runs/g4 --vary
 
       - name: Save the logs as an artifact
         if: always()
