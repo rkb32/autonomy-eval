@@ -181,6 +181,9 @@ def _seen(s: FlightSummary) -> set[str]:
     return set(s.events) | set(s.preflight)
 
 
+SHAPE_METRICS = {"missions_completed"}     # only compared across runs with the same flight count
+
+
 def compare(candidate: FlightSummary, baseline: list[FlightSummary], sim: bool = False) -> Comparison:
     """sim=True uses a floor tied to the baseline's spread, for simulated baselines (see SIM_MAD_MULTIPLE)."""
     result = Comparison(candidate, baseline, warnings=check_comparable(candidate, baseline))
@@ -194,7 +197,18 @@ def compare(candidate: FlightSummary, baseline: list[FlightSummary], sim: bool =
         if abs(z) >= Z_THRESHOLD and abs(value - med) >= effect:
             result.findings.append(Finding(metric, value, med, spread, round(z, 1), verdict or _verdict(metric, value - med)))
 
+    # A count of completed missions only means something across logs with the same number of armed flights:
+    # 2 completions in 2 flights and 2 in 20 flights are not the same result. Skip it when the shapes differ.
+    shapes = {b.metrics.get("flights") for b in baseline}
+    shape_differs = shapes != {candidate.metrics.get("flights")}
+    if shape_differs and SHAPE_METRICS & candidate.metrics.keys():
+        result.warnings.append(
+            f"missions completed not compared: this run has {candidate.metrics.get('flights')} armed flight(s), "
+            f"the baseline has {sorted(map(str, shapes))}")
+
     for metric, value in candidate.metrics.items():
+        if shape_differs and metric in SHAPE_METRICS:
+            continue
         history = [b.metrics[metric] for b in baseline if metric in b.metrics]
         if len(history) >= MIN_BASELINE:
             flag(metric, value, history)
