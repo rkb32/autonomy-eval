@@ -1,0 +1,55 @@
+name: SITL repeat runs (G4 baseline)
+
+# Flies the same Copter mission N times in ArduPilot SITL, inside Docker, and keeps every DataFlash log.
+# Gives same-mission baseline flights for the false-alarm check on the sim floor (G4).
+# Run it by hand from the Actions tab (workflow_dispatch only, not scheduled).
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "How many flights to fly"
+        default: "30"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  fly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pymavlink on the host
+        run: pip install pymavlink
+
+      - name: Build ArduPilot Copter SITL in a Docker volume
+        run: |
+          set -euo pipefail
+          IMAGE="ardupilot/ardupilot-dev-base@sha256:d81c02a9d86ea88b297a66910a6a1f077e8c14cd9ad10e1620b44033e8e371bf"
+          docker volume create ardupilot-src
+          docker run --rm --user root -v ardupilot-src:/ardupilot -w /ardupilot "$IMAGE" bash -c '
+            set -euo pipefail
+            git clone --depth 1 --branch Copter-4.6.2 --recurse-submodules https://github.com/ArduPilot/ardupilot.git /ardupilot
+            ./waf configure --board sitl
+            ./waf copter -j$(nproc)
+          '
+
+      - name: Fly the mission and keep every log
+        run: |
+          set -euo pipefail
+          python scripts/sitl_runs.py --runs "${{ inputs.runs }}" --out runs/g4
+
+      - name: Save the logs as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sitl-g4-${{ github.run_id }}
+          path: runs/g4
+          retention-days: 30
