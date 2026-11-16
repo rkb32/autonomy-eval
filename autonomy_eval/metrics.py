@@ -107,6 +107,10 @@ def summarize(path: str | Path) -> FlightSummary:
         s.quality["format"] = "ulog"
     else:
         s.quality["format"] = "dataflash" if is_dataflash(path) else "tlog"
+    if s.quality["format"] != "tlog":
+        # "Mission Complete" is only in MAVLink telemetry text. DataFlash and ULog never carry it,
+        # so reporting 0 there would look like a real value. Absent means not measured.
+        s.metrics.pop("missions_completed", None)
     return s
 
 
