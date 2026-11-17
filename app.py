@@ -1,22 +1,29 @@
-"""Web demo: the CI result, a way to try your own logs, the stability and estimator checks, and the cross-format check.
+"""Web demo: the CI result, a way to try your own logs, and the stability and estimator checks.
 
     streamlit run app.py
 """
 from __future__ import annotations
 
+import json
 import tempfile
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
 import altair as alt
+import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from autonomy_eval import bisect as bisect_mod
 from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
-from autonomy_eval.compare import MIN_BASELINE, Comparison, scan, vehicle_kind
-from autonomy_eval.metrics import FlightSummary, load
+from autonomy_eval.compare import MIN_BASELINE, Comparison, Incomparable, scan, vehicle_kind
+from autonomy_eval.metrics import METRIC_SERIES, FlightSummary, load, timeline, timeline_band
 from autonomy_eval.report import LABELS, SEVERITY
+from autonomy_eval import batch, flightdata
+from autonomy_eval.health import timing_health
+from autonomy_eval.signals import arm_time, list_signals, read_signal
 
 EXAMPLES = Path(__file__).parent / "examples"
 REPO = "https://github.com/rkb32/autonomy-eval"
@@ -24,103 +31,76 @@ HISTORIES = {
     "Sailboat - 8 daily builds": "ardurover-surface-boat",
     "Ground rover - 8 daily builds": "ardurover-ground-rover",
 }
-STATUS_COLORS = {"REGRESSED": "#d62728", "changed": "#ff9f1c", "ok": "#9aa0a6"}
+STATUS_COLORS = {"REGRESSED": "#E5484D", "changed": "#D9A441", "ok": "#8B929C"}
+SAMPLES = [
+    ("sysid", "Run the stability sample (about 300 MB; the first run is slow)"),
+    ("nees", "Run the estimator sample"),
+    ("step", "Run the step response sample"),
+]
 
-st.set_page_config(page_title="autonomy-eval", page_icon="🛰️", layout="wide")
+st.set_page_config(page_title="Autonomy-eval", layout="centered")
 
-# Visual layer only. Colors that must work in light and dark mode are derived from the current text
-# color (currentColor / color-mix), so they flip with the theme instead of being hard-coded per mode.
+# Small visual layer: monospace numbers in tables, a quiet loading placeholder, and a keyboard hint.
 STYLE = """
 <style>
-:root { --ae-red: #d62728;
-  --ae-gh: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.22 1.88.87 2.34.66.07-.52.28-.87.51-1.07-1.78-.2-3.65-.89-3.65-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z'/%3E%3C/svg%3E");
-  --ae-serif: "Source Serif", ui-serif, Georgia, serif; }
-[data-testid="stMainBlockContainer"] { max-width: 1120px; padding-top: 2.5rem; padding-bottom: 4rem; }
-
-/* hero */
-.ae-hero { padding: 0.5rem 0 1.75rem; margin-bottom: 0.5rem;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
-.ae-hero h1 { font-family: var(--ae-serif); font-weight: 600; font-size: clamp(2.4rem, 6vw, 3.6rem);
-  letter-spacing: -0.025em; line-height: 1.05; margin: 0 0 1rem; padding: 0; }
-.ae-lede { font-family: var(--ae-serif); font-size: clamp(1.1rem, 2.2vw, 1.32rem); line-height: 1.55;
-  max-width: 46rem; margin: 0 0 1.4rem; opacity: 0.92; }
-.ae-lede strong { color: var(--ae-red); font-weight: 600; }
-.ae-cta { display: inline-flex; align-items: center; gap: 0.45rem; padding: 0.5rem 0.95rem; border-radius: 0.5rem;
-  font-size: 0.92rem; font-weight: 600; text-decoration: none !important; color: inherit !important;
-  border: 1px solid color-mix(in srgb, currentColor 22%, transparent); transition: border-color .15s, background .15s; }
-.ae-cta:hover { border-color: var(--ae-red); background: color-mix(in srgb, var(--ae-red) 8%, transparent); }
-.ae-cta::before { content: ""; width: 16px; height: 16px; background: currentColor;
-  -webkit-mask: var(--ae-gh) center / contain no-repeat; mask: var(--ae-gh) center / contain no-repeat; }
-
-/* tabs */
-[data-testid="stTabs"] [role="tablist"] { gap: 1.75rem; overflow-x: auto; scrollbar-width: none;
-  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent); }
-[data-testid="stTab"] { padding: 0.85rem 0 0.75rem; height: auto; background: transparent; }
-[data-testid="stTab"] p { font-size: 1rem !important; font-weight: 600; opacity: 0.6; white-space: nowrap; }
-[data-testid="stTab"]:hover p, [data-testid="stTab"][aria-selected="true"] p { opacity: 1; }
-[data-testid="stTabs"] [role="tabpanel"] { padding-top: 1.6rem; }
-
-/* tab intro paragraphs */
-[class*="st-key-ae-intro"] p { font-size: 1.04rem; line-height: 1.65; max-width: 48rem; opacity: 0.85; }
-
-/* widget labels read as section headings */
-[data-testid="stSelectbox"] label p, [data-testid="stFileUploader"] label p {
-  font-family: var(--ae-serif); font-size: 1.2rem; font-weight: 600; opacity: 1; }
-[data-testid="stSelectbox"] { padding-top: 1.4rem; margin-top: 0.6rem;
-  border-top: 1px solid color-mix(in srgb, currentColor 10%, transparent); }
-[data-testid="stSelectbox"] > div:last-child { max-width: 26rem; }
-
-/* history switch as a segmented control */
-[class*="st-key-ae-history"] [role="radiogroup"] { gap: 0.5rem; flex-wrap: wrap; }
-[class*="st-key-ae-history"] [role="radiogroup"] label { margin: 0; padding: 0.35rem 0.85rem; border-radius: 999px;
-  border: 1px solid color-mix(in srgb, currentColor 16%, transparent); }
-[class*="st-key-ae-history"] [role="radiogroup"] label:has(input:checked) {
-  border-color: var(--ae-red); background: color-mix(in srgb, var(--ae-red) 8%, transparent); }
-
-/* result summary */
-.ae-summary { display: flex; flex-wrap: wrap; gap: 0.6rem; margin: 0.25rem 0 0.9rem; }
-.ae-stat { display: flex; align-items: baseline; gap: 0.45rem; padding: 0.55rem 0.9rem; border-radius: 0.5rem;
-  border: 1px solid color-mix(in srgb, currentColor 12%, transparent); min-width: 7.5rem; }
-.ae-stat b { font-family: var(--ae-serif); font-size: 1.5rem; font-weight: 600; line-height: 1; }
-.ae-stat span { font-size: 0.82rem; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.7; }
-.ae-stat.bad { border-color: color-mix(in srgb, var(--ae-red) 55%, transparent);
-  background: color-mix(in srgb, var(--ae-red) 7%, transparent); }
-.ae-stat.bad b { color: var(--ae-red); }
-.ae-stat.warn b { color: #e08600; }
-
-/* dataframes */
-[data-testid="stDataFrame"] { border-radius: 0.5rem; overflow: hidden; }
-
-/* alerts: hairline card with a colored left rule instead of a filled block */
-[data-testid="stAlertContainer"] { background: color-mix(in srgb, currentColor 3%, transparent) !important;
-  border: 1px solid color-mix(in srgb, currentColor 12%, transparent); border-left-width: 3px; border-radius: 0.5rem; }
-[data-testid="stAlertContentError"], [data-testid="stAlertContentWarning"],
-[data-testid="stAlertContentInfo"], [data-testid="stAlertContentSuccess"] { color: inherit; }
-[data-testid="stAlertContainer"]:has([data-testid="stAlertContentError"]) { border-left-color: var(--ae-red); }
-[data-testid="stAlertContainer"]:has([data-testid="stAlertContentWarning"]) { border-left-color: #e08600; }
-[data-testid="stAlertContainer"]:has([data-testid="stAlertContentInfo"]) { border-left-color: #9aa0a6; }
-[data-testid="stAlertContainer"]:has([data-testid="stAlertContentSuccess"]) { border-left-color: #2f9e6a; }
-
-/* uploader as an obvious empty state */
-[data-testid="stFileUploaderDropzone"] { border: 1.5px dashed color-mix(in srgb, currentColor 32%, transparent);
-  background: transparent; padding: 1.6rem 1.25rem; }
-[data-testid="stFileUploaderDropzone"]:hover { border-color: var(--ae-red); }
-
-/* closing notes under each tab */
-[class*="st-key-ae-note"] { margin-top: 1.25rem; padding: 1rem 1.2rem; border-radius: 0.5rem;
-  border: 1px solid color-mix(in srgb, currentColor 12%, transparent); border-left: 3px solid #9aa0a6; }
-.st-key-ae-note-boat { border-left-color: var(--ae-red) !important; }
-[class*="st-key-ae-note"] p { line-height: 1.65; margin: 0; }
-
-@media (max-width: 640px) {
-  [data-testid="stMainBlockContainer"] { padding-left: 1rem; padding-right: 1rem; padding-top: 3.25rem; }
-  [data-testid="stTabs"] [data-baseweb="tab-list"], [data-testid="stTabs"] [role="tablist"] { gap: 1.1rem; }
-  [data-testid="stTabs"] [role="tablist"] { flex-wrap: wrap; row-gap: 0.25rem; overflow: visible; }
-  .ae-stat { min-width: 0; flex: 1 1 40%; }
-}
+[data-testid="stTable"] table { font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+[data-testid="stTable"] td, [data-testid="stTable"] th { white-space: nowrap; }
+[data-testid="stTable"] th { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.03em;
+  text-transform: uppercase; opacity: 0.6; }
+[data-testid="stTable"] td { text-align: right; }
+[data-testid="stTable"] td:first-child, [data-testid="stTable"] th:first-child { text-align: left; }
+button, [role="tab"] { transition: background-color .12s ease-out, border-color .12s ease-out, color .12s ease-out; }
+.ae-skel { padding: 0.25rem 0 0.5rem; }
+.ae-skel p { margin: 0 0 0.6rem; font-size: 0.9rem; opacity: 0.7; }
+.ae-skel span { display: block; height: 0.9rem; margin: 0.55rem 0; border-radius: 4px;
+  background: color-mix(in srgb, currentColor 10%, transparent); animation: ae-pulse 1.2s ease-in-out infinite; }
+.ae-skel span:nth-of-type(2) { width: 80%; }
+.ae-skel span:nth-of-type(3) { width: 55%; }
+@keyframes ae-pulse { 50% { opacity: .45; } }
+@media (prefers-reduced-motion: reduce) { .ae-skel span { animation: none; } }
+.ae-keys { font-size: 0.85rem; opacity: 0.65; margin: 0 0 1rem; }
+.ae-keys kbd { font-family: ui-monospace, monospace; border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 4px; padding: 0 0.3rem; }
+.ae-wordmark { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; margin: 0.25rem 0 0.4rem; }
+.ae-tagline { margin: 0 0 0.5rem; opacity: 0.85; max-width: 46rem; }
+.ae-facts { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.8rem; opacity: 0.6;
+  margin: 0 0 1.25rem; }
+.ae-cards { display: flex; flex-wrap: wrap; gap: 2rem; margin: 0.5rem 0 1rem; }
+.ae-card { flex: 1 1 8rem; border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  padding-top: 0.6rem; }
+.ae-card-label { font-size: 0.8rem; opacity: 0.6; }
+.ae-card-value { font-size: 1.75rem; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.ae-card-context { font-size: 0.8rem; opacity: 0.55; }
+.ae-first { border-left: 3px solid #E5484D; padding: 0.1rem 0 0.1rem 0.75rem; margin: 0.9rem 0 1rem; }
+.ae-first-amber { border-left-color: #D9A441; }
+.ae-first-ok { border-left-color: #8B929C; }
 </style>
 """
 st.html(STYLE)
+
+# Keys 1-3 switch tabs. The script runs in a hidden component and attaches one listener to the page.
+KEYS_JS = """
+<script>
+(function () {
+  const doc = window.parent.document;
+  if (doc.__aeKeysBound) return;
+  doc.__aeKeysBound = true;
+  doc.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && t.closest && t.closest("input, textarea, select, [contenteditable='true'], [role='listbox'], [role='combobox']")) return;
+    const n = parseInt(e.key, 10);
+    const tabs = doc.querySelectorAll('[data-testid="stTabs"] [role="tab"]');
+    if (n >= 1 && n <= tabs.length) { tabs[n - 1].click(); e.preventDefault(); }
+  });
+})();
+</script>
+"""
+components.html(KEYS_JS, height=0)
+
+
+def skeleton(text: str) -> str:
+    return f'<div class="ae-skel" role="status"><p>{text}</p><span></span><span></span><span></span></div>'
 
 
 def label(metric: str) -> str:
@@ -173,16 +153,16 @@ def metric_chart(results: list[Comparison], metric: str) -> alt.Chart:
     # on a zoomed axis, with the median of all runs as the "normal" line.
     x = alt.X("build:N", sort=None, title="firmware build, oldest to newest", axis=alt.Axis(labelAngle=-45))
     y = alt.Y("value:Q", title=label(metric), scale=alt.Scale(zero=False, padding=12))
-    line = alt.Chart(df).mark_line(color="#9aa0a6", strokeWidth=1).encode(x=x, y=y)
+    line = alt.Chart(df).mark_line(color="#8B929C", strokeWidth=1).encode(x=x, y=y)
     dots = alt.Chart(df).mark_circle(size=140, opacity=1).encode(
         x=x, y=y,
         color=alt.Color("flagged:N", scale=alt.Scale(domain=["normal", "flagged on this metric"],
-                                                     range=["#9aa0a6", "#d62728"]),
+                                                     range=["#8B929C", "#E5484D"]),
                         legend=alt.Legend(title=None, orient="top")),
         tooltip=["build", alt.Tooltip("value:Q", format=".4g"), "flagged"],
     )
     median = alt.Chart(pd.DataFrame({"median": [df["value"].median()]})).mark_rule(
-        strokeDash=[4, 4], color="#9aa0a6").encode(y="median:Q")
+        strokeDash=[4, 4], color="#8B929C").encode(y="median:Q")
     return (line + median + dots).properties(height=300)
 
 
@@ -204,49 +184,89 @@ def show_bisection(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         return
     st.markdown(f"**Possible cause** ([{b.base}...{b.head}]({b.compare_url}))")
     if b.error:
-        st.caption(f"not localized: {b.error}")
+        st.caption(f"Could not pin down the cause: {b.error}")
         return
     if not b.suspects:
-        st.caption(f"None of the {b.total_commits} commit(s) in this range touch code related to "
-                   f"{label(c.regressions[0].metric)}. That itself is evidence this is noise, not a firmware bug.")
+        st.caption(f"None of the {b.total_commits} commits in this range touch code related to "
+                   f"{label(c.regressions[0].metric)}, which points to noise rather than a firmware bug.")
     else:
-        st.caption(f"{len(b.suspects)} of {b.total_commits} commit(s) touch related code:")
+        st.caption(f"{len(b.suspects)} of {b.total_commits} commits touch related code:")
         for s in b.suspects:
-            st.markdown(f"- `{s.sha}` {s.message} — {', '.join(s.files)}")
+            st.markdown(f"- `{s.sha}` {s.message}: {', '.join(s.files)}")
     if b.ai:
-        icon = "🟢" if "false" in b.ai.label else ("🔴" if "true" in b.ai.label else "🟡")
-        st.markdown(f"{icon} **AI read: {b.ai.label}** — {b.ai.reason}")
+        st.markdown(f"**AI read: {b.ai.label}.** {b.ai.reason}")
+
+
+def findings_table(c: Comparison) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
+        "what": label(f.metric),
+        "this run": f.value,
+        "normal (median)": f.median,
+        "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
+    } for f in c.findings])
+
+
+def first_seen(cand: FlightSummary, text: str) -> str:
+    t = cand.event_first.get(text)
+    return "" if t is None else f" (first at {t:g} s into the flight)"
+
+
+def timeline_chart(c: Comparison, metric: str):
+    """The candidate's signal through the flight, with the band the baseline runs span."""
+    name = METRIC_SERIES[metric]
+    cand = getattr(c.candidate, "series", {}).get(name)
+    baselines = [s for s in (getattr(b, "series", {}).get(name) for b in c.baseline) if s]
+    if not cand or len(baselines) < 2:
+        return None
+    line, band = timeline_band(cand, baselines)
+    area = alt.Chart(pd.DataFrame(band, columns=["seconds", "low", "high"])).mark_area(
+        opacity=0.25, color="#888888").encode(
+        x=alt.X("seconds:Q", title="seconds since arming"), y=alt.Y("low:Q", title=label(metric)), y2="high:Q")
+    trace = alt.Chart(pd.DataFrame(line, columns=["seconds", "value"])).mark_line(color="#d62728").encode(
+        x="seconds:Q", y="value:Q")
+    return (area + trace).properties(height=260)
+
+
+def show_timeline(c: Comparison) -> None:
+    options = [f.metric for f in c.findings if f.metric in METRIC_SERIES]
+    if not options:
+        return
+    if not getattr(c.candidate, "series", None):
+        st.caption("The flight timeline needs the raw log; this run came from a saved summary.")
+        return
+    metric = st.selectbox("Flagged metric through the flight", options, format_func=label,
+                          key=f"timeline-{c.candidate.source}")
+    chart = timeline_chart(c, metric)
+    if chart is None:
+        st.caption("Not enough baseline logs with this signal to draw the band.")
     else:
-        st.caption("Set ANTHROPIC_API_KEY to also get an AI likely-true/false-positive read on this.")
+        st.altair_chart(chart, width="stretch")
 
 
 def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
     cand = c.candidate
-    st.markdown(f"**{cand.label}** ({vehicle_kind(cand.vehicle, cand.mav_type)}), compared against "
+    st.markdown(f"**{cand.label}** ({vehicle_kind(cand.vehicle, cand.mav_type)}), compared with "
                 f"{len(c.baseline)} other runs: {', '.join(b.label for b in c.baseline)}")
     for w in c.warnings:
         st.caption(f"note: {w}")
     if not c.flag_count:
-        st.success("No regressions: every metric is within the normal range of the other runs.")
+        st.success("Nothing regressed. Every metric sits within the normal range of the other runs.")
         return
     if c.findings:
-        st.dataframe(pd.DataFrame([{
-            "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
-            "what": label(f.metric),
-            "this run": f.value,
-            "normal (median)": f.median,
-            "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
-        } for f in c.findings]), hide_index=True, width="stretch")
+        st.table(findings_table(c).style.hide(axis="index"))
+        show_timeline(c)
     if c.regressions:
         show_bisection(c, ordered_runs)
     if c.new_alarms:
-        st.error("New warnings/errors never seen before:\n\n" +
-                 "\n".join(f"- [{SEVERITY[m.severity]}] {m.text}" for m in c.new_alarms))
+        st.error("These warnings or errors have never appeared in the other runs:\n\n" +
+                 "\n".join(f"- [{SEVERITY[m.severity]}] {m.text}{first_seen(cand, m.text)}" for m in c.new_alarms))
     info = [m for m in c.new_messages if not m.alarming]
     if info:
-        st.info("New messages (informational):\n\n" + "\n".join(f"- {m.text}" for m in info))
+        st.info("New messages (for information only):\n\n" +
+                "\n".join(f"- {m.text}{first_seen(cand, m.text)}" for m in info))
     if c.missing_messages:
-        st.info("Missing messages (seen in every other run, absent here):\n\n" +
+        st.info("Messages that appear in every other run but are missing here:\n\n" +
                 "\n".join(f"- {m}" for m in c.missing_messages))
     if cand.source.startswith("http"):
         st.caption(f"Raw log: {cand.source}")
@@ -258,14 +278,366 @@ def cached_sample(kind: str) -> CheckOutcome:
     return run_sample(kind)
 
 
-def show_triage(verdict: str, items: list[str]) -> None:
-    if verdict == "LIKELY REAL":
-        st.error(f"Triage: likely real. Outside the baseline spread on: {', '.join(items)}")
-    elif verdict == "POSSIBLE":
-        st.warning(f"Triage: possible, not confirmed. Only {items[0]} is outside the spread. "
-                   "One item is usually noise; rerun before treating it as real.")
-    else:
-        st.success("Triage: within noise. The run matches the baseline spread.")
+def in_temp_file(name: str, data: bytes, fn, *args):
+    """Run a reader that needs a file path, on the uploaded bytes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / Path(name).name
+        p.write_bytes(data)
+        return fn(p, *args)
+
+
+@st.cache_data(show_spinner="Reading the message list...")
+def log_signals(name: str, data: bytes) -> dict[str, list[str]]:
+    return in_temp_file(name, data, list_signals)
+
+
+@st.cache_data(show_spinner="Reading the signal from the log...")
+def log_signal(name: str, data: bytes, msg: str, field: str):
+    return in_temp_file(name, data, read_signal, msg, field)
+
+
+@st.cache_data(show_spinner=False)
+def log_arm_time(name: str, data: bytes):
+    return in_temp_file(name, data, arm_time)
+
+
+@st.cache_data(show_spinner="Reading scheduler and IMU timing...")
+def log_health(name: str, data: bytes):
+    return in_temp_file(name, data, timing_health)
+
+
+@st.fragment
+def health_section(bins: list) -> None:
+    """Scheduler, log and IMU timing for each uploaded .bin log."""
+    st.subheader("Logging and timing health")
+    st.caption("For each log: how often the scheduler overran, how long its loops took, the logged CPU load, "
+               "dropped log blocks, and the worst gap in the IMU clock. A change here usually points at the "
+               "firmware rather than the tuning.")
+    rows = []
+    for f in bins:
+        h = log_health(f.name, f.getvalue())
+        if h is None:
+            continue
+        rows.append({"log": f.name, "loops overrun (%)": h["overrun_pct"], "max loop time": h["max_loop_time"],
+                     "max CPU load": h["max_cpu_load"], "dropped log blocks": h["dropped_blocks"],
+                     "worst IMU gap (x median)": h["worst_imu_gap"]})
+    if not rows:
+        st.info("None of these logs has scheduler (PM) messages, so timing health cannot be read.")
+        return
+    table = pd.DataFrame(rows).set_index("log").round(2)
+    st.table(table.style.format(na_rep="n/a"))
+    st.caption("On the simulated (SITL) logs we checked, CPU load stayed at 0, so the table looks healthy there. "
+               "Use logs from real hardware to see a real change in load.")
+
+
+@st.cache_data(show_spinner="Reading the flight...")
+def fd_call(name: str, data: bytes, fn_name: str, args: tuple = ()):
+    """Run one flightdata reader on the uploaded bytes, cached per log and call."""
+    return in_temp_file(name, data, getattr(flightdata, fn_name), *args)
+
+
+def _thin(df: pd.DataFrame, limit: int = 4000) -> pd.DataFrame:
+    step = max(1, len(df) // limit)
+    return df.iloc[::step]
+
+
+def _fmt(value, spec: str) -> str:
+    return "n/a" if value is None else format(value, spec)
+
+
+def log_numbers(runs: list[FlightSummary]) -> pd.DataFrame:
+    """Each log's own numbers, one column per log, for when there are too few logs to compare."""
+    names = sorted({k for r in runs for k in r.metrics})
+    return pd.DataFrame({r.source: {label(k): r.metrics.get(k) for k in names} for r in runs})
+
+
+def summary_markdown(runs: list[FlightSummary], bins: list, notes: list) -> str:
+    """Markdown summary: the comparison per vehicle, the fault checks and timing per log, and the notes."""
+    lines = ["# Autonomy-eval summary", ""]
+    groups: dict[tuple, list[FlightSummary]] = {}
+    for r in runs:
+        groups.setdefault((r.vehicle, r.mav_type), []).append(r)
+    for (vehicle, mav_type), group in groups.items():
+        lines.append(f"## {vehicle_kind(vehicle, mav_type)}: {len(group)} log(s)")
+        if len(group) <= MIN_BASELINE:
+            lines += [f"Needs more than {MIN_BASELINE} logs to compare.", ""]
+            continue
+        try:
+            results = scan(group)
+        except Incomparable as e:
+            lines += [f"Could not compare: {e}", ""]
+            continue
+        for c in results:
+            lines.append(f"- {c.candidate.label}: {status(c)} ({c.flag_count} flagged)")
+        lines.append("")
+    lines += ["## Checks per log", ""]
+    for f in bins:
+        data = f.getvalue()
+        lines.append(f"### {f.name}")
+        for row in fd_call(f.name, data, "fault_checks"):
+            lines.append(f"- {row['check']}: {row['status']} ({row['detail']})")
+        h = log_health(f.name, data)
+        if h is not None:
+            lines.append(f"- Timing: overruns {_fmt(h['overrun_pct'], '.2f')}%, "
+                         f"max loop {_fmt(h['max_loop_time'], '.0f')}, max CPU load {_fmt(h['max_cpu_load'], '.0f')}")
+        lines.append("")
+    if notes:
+        lines += ["## Notes", ""]
+        lines += [f"- {n['log']} {n['from (s)']:g} to {n['to (s)']:g} s: {n['note']}" for n in notes]
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+@st.fragment
+def views_section(bins: list) -> None:
+    """Map, modes, outputs, firmware, fault checks, derived signals, rate tracking, spectrum, notes and summary."""
+    st.subheader("More views")
+    names = [f.name for f in bins]
+    with st.expander("Load a saved view"):
+        loaded = st.file_uploader("Choose a view file (JSON)", type=["json"], key="view-up")
+        if loaded is not None and st.session_state.get("view-applied") != loaded.file_id:
+            try:
+                saved = json.loads(loaded.getvalue())
+                if saved.get("log") in names:
+                    st.session_state["views-log"] = saved["log"]
+                st.session_state["views-msg"] = str(saved.get("msg", "BAT"))
+                st.session_state["views-expr"] = str(saved.get("expr", "Volt * Curr"))
+                st.session_state["notes"] = list(saved.get("notes", []))
+                st.session_state["view-applied"] = loaded.file_id
+                st.success("View loaded. Mode choices are not restored; pick them again if needed.")
+            except (ValueError, AttributeError, TypeError):
+                st.error("That file is not a saved view.")
+    log_name = st.selectbox("Log for these views", names, key="views-log")
+    data = next(f.getvalue() for f in bins if f.name == log_name)
+    notes = st.session_state.setdefault("notes", [])
+
+    with st.expander("Flight modes and the mode filter"):
+        segs = fd_call(log_name, data, "mode_segments")
+        if not segs:
+            st.info("This log has no MODE messages.")
+        else:
+            modes = list(dict.fromkeys(s[3] for s in segs))
+            keep = st.multiselect("Modes to keep in the rate chart", modes, default=modes, key="views-modes")
+            band = pd.DataFrame([{"start": s[0], "end": s[1], "mode": s[3]} for s in segs])
+            st.altair_chart(
+                alt.Chart(band).mark_rect(opacity=0.5).encode(
+                    x=alt.X("start:Q", title="time (s)"), x2="end:Q",
+                    color=alt.Color("mode:N", legend=alt.Legend(title=None, orient="top"))).properties(height=60),
+                width="stretch")
+
+    with st.expander("Roll rate: desired against measured"):
+        t, des, act = fd_call(log_name, data, "rate_tracking", ("R",))
+        df = pd.DataFrame({"t": t, "desired": des, "measured": act})
+        if segs and keep:
+            mask = np.zeros(t.size, dtype=bool)
+            for s in segs:
+                if s[3] in keep:
+                    mask |= (t >= s[0]) & (t < s[1])
+            df = df[mask]
+        if len(df):
+            err = df["desired"].to_numpy() - df["measured"].to_numpy()
+            st.metric("RMS tracking error for the modes kept (rad/s)", f"{float(np.sqrt(np.mean(err ** 2))):.4f}")
+        long = _thin(df).melt("t", var_name="series", value_name="rate (rad/s)")
+        st.altair_chart(
+            alt.Chart(long).mark_line(strokeWidth=1.2).encode(
+                x=alt.X("t:Q", title="time (s)"), y=alt.Y("rate (rad/s):Q", scale=alt.Scale(zero=False)),
+                color=alt.Color("series:N", legend=alt.Legend(title=None, orient="top"))).properties(height=260),
+            width="stretch")
+        st.caption("Only the modes chosen above are drawn. This shows how closely the roll rate follows its target; "
+                   "it does not estimate PID gains.")
+
+    with st.expander("Map of the track"):
+        lat, lng = fd_call(log_name, data, "gps_track")
+        if lat.size == 0:
+            st.info("No 3D GPS fix in this log.")
+        else:
+            st.map(_thin(pd.DataFrame({"lat": lat, "lon": lng}), 2000), size=4)
+            st.caption(f"{lat.size} GPS samples with a 3D fix or better.")
+
+    with st.expander("Motor and servo outputs"):
+        t, c = fd_call(log_name, data, "actuator_outputs")
+        if not c:
+            st.info("This log has no RCOU messages.")
+        else:
+            df = pd.DataFrame({"t": t, **c}).melt("t", var_name="channel", value_name="PWM (us)")
+            st.altair_chart(
+                alt.Chart(_thin(df)).mark_line(strokeWidth=1.2).encode(
+                    x=alt.X("t:Q", title="time (s)"), y=alt.Y("PWM (us):Q", scale=alt.Scale(zero=False)),
+                    color=alt.Color("channel:N", legend=alt.Legend(title=None, orient="top"))).properties(height=260),
+                width="stretch")
+
+    with st.expander("Firmware and parameters"):
+        info = fd_call(log_name, data, "firmware_info")
+        st.table(pd.DataFrame([{
+            "firmware": info["version"] or "not in log",
+            "parameters": info["parameters"],
+            "log length (s)": round(info["log_seconds"], 1),
+        }]).style.hide(axis="index"))
+
+    with st.expander("Fault checks"):
+        rows = fd_call(log_name, data, "fault_checks")
+        table = pd.DataFrame(rows)
+        st.table(table.style.map(
+            lambda v: "color: #E5484D; font-weight: 600" if v == "found"
+            else ("opacity: 0.55" if v == "not in log" else ""), subset=["status"]).hide(axis="index"))
+        st.caption("Each check uses a simple threshold: for example, a motor counts as saturated when it sits at "
+                   "1950 us or more on over 2% of spinning samples. The thresholds are starting points, not tuned.")
+
+    with st.expander("Derived signal"):
+        msg = st.text_input("Message type", "BAT", key="views-msg")
+        expr = st.text_input("Expression, using that message's fields", "Volt * Curr", key="views-expr")
+        try:
+            t, v = fd_call(log_name, data, "derived_signal", (msg, expr))
+            st.altair_chart(
+                alt.Chart(_thin(pd.DataFrame({"t": t, "value": v}))).mark_line(strokeWidth=1.2).encode(
+                    x=alt.X("t:Q", title="time (s)"), y=alt.Y("value:Q", title=expr, scale=alt.Scale(zero=False))
+                ).properties(height=260),
+                width="stretch")
+        except ValueError as e:
+            st.error(str(e))
+        st.caption("Allowed: numbers, the message's field names, + - * /, unary minus, abs() and sqrt(). "
+                   "Nothing else runs.")
+
+    with st.expander("Vibration spectrum (gyro)"):
+        picked = st.multiselect("Logs", names, default=[log_name], key="views-spec-logs")
+        frames, rates = [], []
+        for n in picked:
+            d = next(f.getvalue() for f in bins if f.name == n)
+            try:
+                f, p, fs = in_temp_file(n, d, batch.batch_spectrum, 0)
+                source = "sensor-rate batches"
+            except ValueError:
+                try:
+                    f, p, fs = fd_call(n, d, "gyro_spectrum", ("GyrX",))
+                    source = "IMU, 50 Hz"
+                except ValueError as e:
+                    st.warning(f"{n}: {e}")
+                    continue
+            rates.append(f"{n}: {fs:.0f} Hz, {source}")
+            frames.append(pd.DataFrame({"frequency (Hz)": f, "power": p + 1e-20, "log": n}))
+        if frames:
+            st.altair_chart(
+                alt.Chart(pd.concat(frames)).mark_line(strokeWidth=1.2).encode(
+                    x=alt.X("frequency (Hz):Q"), y=alt.Y("power:Q", scale=alt.Scale(type="log"), title="power"),
+                    color=alt.Color("log:N", legend=alt.Legend(title=None, orient="top"))).properties(height=260),
+                width="stretch")
+            st.caption("Sample rates: " + "; ".join(rates) + ". A spectrum reaches only half its sample rate. "
+                       "Batch blocks alternate gyro and accel, so the gyro is sampled about half the time. "
+                       "Logs without batches use the 50 Hz IMU stream, which shows up to 25 Hz.")
+
+    with st.expander("Roll-rate tracking by gain"):
+        picked_g = st.multiselect("Logs", names, default=[log_name], key="views-gain-logs")
+        rows = []
+        for n in picked_g:
+            d = next(f.getvalue() for f in bins if f.name == n)
+            try:
+                s = fd_call(n, d, "roll_tracking_summary")
+            except ValueError as e:
+                st.warning(f"{n}: {e}")
+                continue
+            rows.append({"log": n, "ATC_RAT_RLL_P": s["gain"], "roll error RMS (deg/s)": round(s["rms"], 3),
+                         "RATE samples": s["samples"]})
+        if rows:
+            st.table(pd.DataFrame(rows))
+            st.caption("Lower RMS means the roll rate followed its command more closely. "
+                       "One run per gain shows a direction, not a fitted optimum.")
+
+    with st.expander("Notes on the timeline"):
+        c1, c2, c3 = st.columns([1, 1, 3])
+        start = c1.number_input("From (s)", min_value=0.0, value=0.0, step=1.0, key="note-start")
+        end = c2.number_input("To (s)", min_value=0.0, value=0.0, step=1.0, key="note-end")
+        text = c3.text_input("Note", key="note-text")
+        if st.button("Add note", key="note-add"):
+            if text and end > start:
+                notes.append({"log": log_name, "from (s)": start, "to (s)": end, "note": text})
+            else:
+                st.warning("A note needs text and an end time after the start time.")
+        if notes:
+            st.table(pd.DataFrame(notes).style.hide(axis="index"))
+        st.download_button("Download notes (JSON)", json.dumps(notes, indent=1), file_name="notes.json",
+                           mime="application/json", key="notes-dl")
+
+    with st.expander("Save this view, or download a summary"):
+        view = {"log": log_name, "msg": st.session_state.get("views-msg", "BAT"),
+                "expr": st.session_state.get("views-expr", "Volt * Curr"), "notes": notes}
+        st.download_button("Download this view (JSON)", json.dumps(view, indent=1), file_name="view.json",
+                           mime="application/json", key="view-dl")
+        if st.session_state.get("uploaded_runs"):
+            # Built only on request: it reads every uploaded log.
+            if st.button("Prepare the summary", key="summary-prep"):
+                st.session_state["summary_text"] = summary_markdown(st.session_state["uploaded_runs"], bins, notes)
+            if "summary_text" in st.session_state:
+                st.download_button("Download summary (Markdown)", st.session_state["summary_text"],
+                                   file_name="summary.md", mime="text/markdown", key="summary-dl")
+        else:
+            st.caption("Analyze uploaded logs first to include the comparison in the summary.")
+
+
+@st.fragment
+def signal_section(bins: list) -> None:
+    """Plot one logged field over time, for one or several logs. A fragment, so the pickers do not rerun the page."""
+    st.subheader("Plot any signal")
+    st.caption("Pick a message and a field to see it over time. Choose several logs to overlay them. "
+               "Text fields are left out.")
+    names = [f.name for f in bins]
+    picked = st.multiselect("Logs", names, default=names[:2], key="sig-logs")
+    if not picked:
+        st.info("Pick at least one log.")
+        return
+    datas = {f.name: f.getvalue() for f in bins if f.name in picked}
+    lists = [log_signals(n, d) for n, d in datas.items()]
+    common = sorted(set.intersection(*(set(s) for s in lists)))
+    if not common:
+        st.info("These logs have no message type in common.")
+        return
+    msg = st.selectbox("Message", common, key="sig-msg")
+    fields = [f for f in lists[0][msg] if all(f in s[msg] for s in lists)]
+    field = st.selectbox("Field", fields, key="sig-field")
+    align = st.toggle("Line up on arming", value=True, key="sig-align")
+
+    frames, unaligned = [], []
+    for n, d in datas.items():
+        t, v = log_signal(n, d, msg, field)
+        if not t:
+            continue
+        offset = 0.0
+        if align:
+            at = log_arm_time(n, d)
+            if at is None:
+                unaligned.append(n)
+            else:
+                offset = at
+        step = max(1, len(t) // 4000)     # about 4000 points per log is plenty to see a signal
+        frames.append(pd.DataFrame({"t": [x - offset for x in t[::step]], "value": v[::step], "log": n}))
+    if not frames:
+        st.info(f"{msg}.{field} has no samples in the chosen logs.")
+        return
+    df = pd.concat(frames, ignore_index=True)
+    chart = alt.Chart(df).mark_line(strokeWidth=1.3).encode(
+        x=alt.X("t:Q", title="time from arming (s)" if align else "time (s)"),
+        y=alt.Y("value:Q", title=f"{msg}.{field}", scale=alt.Scale(zero=False)),
+        color=alt.Color("log:N", legend=alt.Legend(title=None, orient="top")),
+        tooltip=[alt.Tooltip("log:N", title="log"), alt.Tooltip("t:Q", title="time (s)", format=".1f"),
+                 alt.Tooltip("value:Q", title=f"{msg}.{field}", format=".4g")],
+    ).properties(height=300)
+    st.altair_chart(chart, width="stretch")
+    note = "Each line is thinned to at most 4000 points."
+    if align and unaligned:
+        note += " Logs with no arm record start from their first sample: " + ", ".join(unaligned) + "."
+    st.caption(note)
+
+
+def regression_text(outcome: CheckOutcome) -> str:
+    """One verdict line for a failed check, with the triage folded in so the page never says two things."""
+    if outcome.triage:
+        verdict, items = outcome.triage
+        if verdict == "LIKELY REAL":
+            return f"This looks like a real regression: {', '.join(items)} fell outside the normal range."
+        if verdict == "POSSIBLE":
+            return (f"This may be noise. Only {items[0]} fell outside the normal range, "
+                    "so rerun the flight before trusting it.")
+        return "This is probably noise. The run as a whole matches the normal range of the earlier flights."
+    return "The run fell outside the normal range of the earlier flights."
 
 
 def show_check(outcome: CheckOutcome, kind: str) -> None:
@@ -273,107 +645,136 @@ def show_check(outcome: CheckOutcome, kind: str) -> None:
         st.error(outcome.error)
         return
     c = outcome.comparison
-    st.markdown(f"**{c.candidate.label}**, compared against {len(c.baseline)} earlier flight(s)")
+    st.markdown(f"**{c.candidate.label}**, compared with {len(c.baseline)} earlier flight(s)")
     if kind == "step":
-        st.info("Information only: step metrics never fail a build.")
+        st.info("For information only: step metrics never fail a build.")
     elif c.failed:
-        st.error("Regression: outside the normal range of the earlier flights.")
+        st.error(regression_text(outcome))
     else:
-        st.success("No regressions: within the normal range of the earlier flights.")
-    if outcome.triage:
-        show_triage(*outcome.triage)
+        st.success("Nothing regressed. The run sits within the normal range of the earlier flights.")
     if outcome.note:
         st.caption(outcome.note)
     if c.findings:
-        st.dataframe(pd.DataFrame([{
-            "": {"worse": "worse", "better": "better", "changed": "changed"}[f.verdict],
-            "what": label(f.metric),
-            "this run": f.value,
-            "normal (median)": f.median,
-            "change": f"{f.pct:+.1f}%" if f.pct is not None else "",
-        } for f in c.findings]), hide_index=True, width="stretch")
+        st.table(findings_table(c).style.hide(axis="index"))
     for w in c.warnings:
         st.caption(f"note: {w}")
+
+
+@st.fragment
+def detail_section(results: list[Comparison], runs: list[FlightSummary], key: str,
+                   default_metric: str | None, worst: str) -> None:
+    """Chart and per-run detail. A fragment, so changing a selector does not rerun the whole page."""
+    labels = [c.candidate.label for c in results]
+    flagged_metrics = [f.metric for c in results for f in c.findings if not f.metric.startswith("event:")]
+    metrics = sorted({m for r in runs for m in r.metrics})
+    default = default_metric or (flagged_metrics[0] if flagged_metrics else "armed_time_s")
+    with st.expander("Charts and details"):
+        metric = st.selectbox("Pick a metric to compare across builds", metrics,
+                              index=metrics.index(default) if default in metrics else 0,
+                              format_func=label, key=f"{key}-metric")
+        st.altair_chart(metric_chart(results, metric), width="stretch")
+        choice = st.selectbox("Pick one build to look at closely", labels, index=labels.index(worst), key=f"{key}-detail")
+        show_detail(next(c for c in results if c.candidate.label == choice), runs)
+
+
+def stat_cards(regressed: int, changed: int, ok: int, total: int) -> None:
+    """Three plain numbers with their context. Only a non-zero regressed count is coloured."""
+    def card(label: str, value: int, color: str | None = None) -> str:
+        style = f' style="color: {color}"' if color else ""
+        return (f'<div class="ae-card"><div class="ae-card-label">{label}</div>'
+                f'<div class="ae-card-value"{style}>{value}</div>'
+                f'<div class="ae-card-context">of {total} builds</div></div>')
+    st.html('<div class="ae-cards">'
+            + card("Regressed", regressed, "#E5484D" if regressed else None)
+            + card("Changed", changed) + card("OK", ok) + "</div>")
 
 
 def results_section(runs: list[FlightSummary], key: str, default_metric: str | None = None) -> None:
     results = scan(runs)
     df = scan_table(results)
     counts = {s: sum(status(c) == s for c in results) for s in ("REGRESSED", "changed", "ok")}
-    st.html(
-        '<div class="ae-summary">'
-        f'<div class="ae-stat"><b>{len(results)}</b><span>runs</span></div>'
-        f'<div class="ae-stat{" bad" if counts["REGRESSED"] else ""}"><b>{counts["REGRESSED"]}</b><span>regressed</span></div>'
-        f'<div class="ae-stat{" warn" if counts["changed"] else ""}"><b>{counts["changed"]}</b><span>changed</span></div>'
-        f'<div class="ae-stat"><b>{counts["ok"]}</b><span>ok</span></div>'
-        '</div>'
-    )
-    st.dataframe(
-        df.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600", subset=["status"]),
-        hide_index=True, width="stretch",
-    )
-    flagged_metrics = [f.metric for c in results for f in c.findings if not f.metric.startswith("event:")]
-    metrics = sorted({m for r in runs for m in r.metrics})
-    default = default_metric or (flagged_metrics[0] if flagged_metrics else "armed_time_s")
-    metric = st.selectbox("Compare one metric across runs", metrics, index=metrics.index(default) if default in metrics else 0,
-                          format_func=label, key=f"{key}-metric")
-    st.altair_chart(metric_chart(results, metric), width="stretch")
     worst = next((c.candidate.label for c in results if c.failed), results[0].candidate.label)
-    choice = st.selectbox("Look at one run in detail", [c.candidate.label for c in results],
-                          index=[c.candidate.label for c in results].index(worst), key=f"{key}-detail")
-    show_detail(next(c for c in results if c.candidate.label == choice), runs)
+    # Three numbers first, then one sentence. The table, chart and per-run detail below are for checking them.
+    stat_cards(counts["REGRESSED"], counts["changed"], counts["ok"], len(results))
+    if counts["REGRESSED"]:
+        st.html(f'<p class="ae-first">{counts["REGRESSED"]} of {len(results)} builds regressed. '
+                f'The first one is {worst}.</p>')
+    elif counts["changed"]:
+        st.html(f'<p class="ae-first ae-first-amber">Nothing regressed. {counts["changed"]} of {len(results)} '
+                'builds changed on at least one metric.</p>')
+    else:
+        st.html(f'<p class="ae-first ae-first-ok">Nothing regressed across the {len(results)} builds.</p>')
+
+    only_changed = st.toggle("Show only builds that changed", key=f"{key}-only")
+    shown = df[df["status"] != "ok"] if only_changed else df
+    if shown.empty:
+        st.caption("No build changed. Turn the filter off to see them all.")
+    else:
+        st.table(shown.style.map(lambda v: f"color: {STATUS_COLORS.get(v, 'inherit')}; font-weight: 600",
+                                 subset=["status"]).hide(axis="index"))
+    with st.popover("What does normal mean?"):
+        st.markdown(
+            "\"Normal\" is the typical value across the other runs, one metric at a time (their median). "
+            "A metric gets flagged when this run lands outside the range the other runs cover."
+        )
+    st.download_button("Download this table (CSV)", data=df.to_csv(index=False).encode("utf-8"),
+                       file_name=f"{key}-builds.csv", mime="text/csv", key=f"{key}-csv")
+    detail_section(results, runs, key, default_metric, worst)
 
 
 st.html(
-    '<header class="ae-hero">'
-    '<h1>autonomy-eval</h1>'
-    '<p class="ae-lede">Catches <strong>flight regressions</strong>: compares a test flight\'s log against earlier '
-    "flights of the same vehicle and reports what got worse than normal. Existing ArduPilot log tools look at one "
-    "flight at a time; this answers <em>did this build fly worse than the last ones did?</em></p>"
-    f'<a class="ae-cta" href="{REPO}" target="_blank" rel="noopener">Code on GitHub</a>'
-    "</header>"
+    '<div class="ae-wordmark">Autonomy-eval</div>'
+    '<p class="ae-tagline">Compares a flight log with earlier flights of the same vehicle, and flags anything '
+    "outside their normal range. It shows whether a build flew worse than the ones before it.</p>"
+    '<p class="ae-facts">ArduPilot CI history · 2 vehicles · 8 builds each</p>'
 )
+st.markdown(f"[Source on GitHub ↗]({REPO})")
+st.html('<p class="ae-keys">Press 1, 2 or 3 to switch tabs</p>')
 
-tab_ci, tab_upload, tab_checks, tab_formats = st.tabs(
-    ["Real ArduPilot CI result", "Try your own logs", "Stability and estimator checks", "Same flight, two formats"])
+tab_ci, tab_upload, tab_checks = st.tabs(["Example result", "Check your logs", "Check one flight"])
 
 with tab_ci:
-    st.container(key="ae-intro-ci").markdown(
-        "ArduPilot's CI reruns the same test missions on every firmware build and publishes the "
-        "telemetry. Each build below is compared against the other seven."
+    st.markdown(
+        "ArduPilot's CI flies the same test missions on every firmware build and saves the telemetry. "
+        "Each build here is compared with the other seven."
     )
-    history = st.container(key="ae-history").radio(
-        "History", list(HISTORIES), horizontal=True, label_visibility="collapsed")
+    # A shared link can open a given history: ?history=ardurover-ground-rover
+    linked = st.query_params.get("history")
+    start = next((k for k, v in HISTORIES.items() if v == linked), next(iter(HISTORIES)))
+    history = st.segmented_control("History", list(HISTORIES), default=start, key="ci-history",
+                                   label_visibility="collapsed") or start
     folder = HISTORIES[history]
+    st.query_params["history"] = folder
     results_section(load_history(folder), key=folder,
                     default_metric="armed_time_s" if folder == "ardurover-surface-boat" else None)
     if folder == "ardurover-surface-boat":
-        st.container(key="ae-note-boat").markdown(
+        st.markdown(
             "**What happened in build bf080274:** the boat tacked one extra time, which alone explains "
-            "the 13 extra seconds and the worse tracking. \"Possible cause\" above (found automatically, "
-            "not written by hand) agrees: the one commit it flags only relocates a parameter table, not "
-            "control logic, so the likely cause is the simulator making a different tack decision -- a "
-            "flaky test, not a firmware bug. Knowing which is the point."
+            "the 13 extra seconds and the worse tracking. The \"possible cause\" above was found automatically, "
+            "not written by hand, and it agrees. The one commit it flags only moves a parameter table and does not "
+            "change control logic. So the likely cause is that the simulator made a different tack decision. "
+            "That is a flaky test, not a firmware bug."
         )
     else:
-        st.container(key="ae-note-rover").markdown(
+        st.markdown(
             "No build regressed. This history was held out while the rules were developed; the first "
             "run on it produced two false alarms, which were fixed "
             f"([before and after]({REPO}#honest-results))."
         )
 
 with tab_upload:
-    st.container(key="ae-intro-upload").markdown(
-        f"Upload at least {MIN_BASELINE + 1} logs of the **same vehicle and mission**: MAVLink telemetry "
-        "(`.tlog`), ArduPilot DataFlash (`.bin`), or summaries saved by `autonomy-eval summarize -o` "
-        "(`.json`). Logs are grouped by the vehicle their contents say they are, and each run is compared "
-        "against the rest. Files are processed in memory for this session and not kept. Upload them "
-        "oldest build first: a regression's \"possible cause\" looks for the ArduPilot commits between "
-        "the upload right before it and itself."
+    st.markdown(f"To compare runs, upload at least {MIN_BASELINE + 1} logs of the **same vehicle and mission**.")
+    st.markdown(
+        "- **Formats:** MAVLink telemetry (`.tlog`), ArduPilot DataFlash logs (`.bin`), PX4 ULog logs (`.ulg`), "
+        "or summaries saved by `autonomy-eval summarize -o` (`.json`). PX4 logs compare only the signals both "
+        "autopilots record: armed time, battery, GPS, flight mode and messages.\n"
+        "- **Oldest build first.** The possible cause of a regression comes from the commits between it and the "
+        "build just before it.\n"
+        "- **Private:** your files are read into memory for this session only and are never kept."
     )
-    files = st.file_uploader("Flight logs", type=["tlog", "bin", "json"], accept_multiple_files=True)
+    files = st.file_uploader("Flight logs", type=["tlog", "bin", "ulg", "json"], accept_multiple_files=True)
     if not files:
-        st.info("No logs yet? The Real ArduPilot CI result tab shows the same comparison on real build history.")
+        st.info("No logs yet? The Example result tab (press 1) shows the same comparison on real build history.")
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):
         runs, failed = [], []
         progress = st.progress(0.0, text="Reading logs...")
@@ -386,16 +787,27 @@ with tab_upload:
                 except Exception as e:  # a corrupt or unsupported upload should not take the page down
                     failed.append(f"{f.name}: {e}")
                 else:
+                    if not f.name.lower().endswith(".json"):
+                        try:
+                            s.series = timeline(path)
+                        except Exception:  # the summary still works without the timeline
+                            s.series = {}
                     if s.vehicle is None and s.mav_type is None:
                         failed.append(f"{f.name}: no autopilot found in it (not a flight log?)")
                     else:
                         s.source = f.name
+                        if s.quality.get("no_armed_state"):
+                            st.warning(f"{f.name} has no arming records, so its armed time and flight count are not reliable.")
                         runs.append(s)
                 progress.progress((i + 1) / len(files), text=f"Read {f.name}")
         progress.empty()
-        st.caption(f"Read {len(runs)} of {len(files)} file(s)" + (f"; {len(failed)} could not be read." if failed else "."))
+        st.caption(f"Read {len(runs)} of {len(files)} files" + (f"; {len(failed)} could not be read." if failed else "."))
         for msg in failed:
             st.warning(f"Could not read {msg}")
+        shared = Counter(r.label for r in runs)
+        for r in runs:
+            if shared[r.label] > 1:  # PX4 logs often share one firmware label; the file name tells them apart
+                r.title = f"{r.label} · {r.source}"
         st.session_state["uploaded_runs"] = runs
     if not files:
         st.session_state.pop("uploaded_runs", None)   # cleared files must clear the old results too
@@ -406,47 +818,56 @@ with tab_upload:
     for (vehicle, mav_type), group in groups.items():
         st.subheader(f"{vehicle_kind(vehicle, mav_type)}: {len(group)} log(s)")
         if len(group) <= MIN_BASELINE:
-            st.warning(f"Need more than {MIN_BASELINE} logs of this vehicle to compare them.")
+            st.warning(f"Upload more than {MIN_BASELINE} logs of this vehicle to compare them. Each log's own numbers are below.")
+            st.dataframe(log_numbers(group))
             continue
         results_section(group, key=f"upload-{vehicle}-{mav_type}")
+    bins = [f for f in (files or []) if f.name.lower().endswith(".bin")]
+    if bins:
+        signal_section(bins)
+        health_section(bins)
+        views_section(bins)
 
 with tab_checks:
-    st.container(key="ae-intro-checks").markdown(
-        "The stability and estimator checks from the command line, on your own flights. They read raw "
-        "DataFlash `.bin` logs, not summaries, and each needs a flight made for it: a SystemID chirp for "
-        "stability margins, a SITL run that records ground truth for the estimator check, or GUIDED "
-        "position steps for the step response."
+    st.markdown(
+        "These are the same stability and estimator checks the command line runs. Use your own flights or a sample. Each one reads "
+        "raw DataFlash `.bin` logs and needs a flight made for it: a SystemID chirp for stability margins, "
+        "a SITL run with ground truth for the estimator, or GUIDED position steps for the step response."
     )
-    kind = st.radio("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0], horizontal=True, key="chk-kind")
+    kind = st.segmented_control("Check", list(CHECKS), format_func=lambda k: CHECKS[k][0],
+                                default=next(iter(CHECKS)), key="chk-kind") or next(iter(CHECKS))
     st.caption(CHECKS[kind][1])
-    st.markdown("**Or try a sample flight** (SITL flights with a known fault). The stability sample is about "
-                "300 MB in total (four files of about 75 MB each), so its first run takes a while; the samples are "
-                "downloaded once and then reused.")
-    for sample_kind, sample_label in [("sysid", "Stability margins"), ("nees", "Estimator consistency"),
-                                      ("step", "Step response")]:
-        if st.button(f"Run {sample_label.lower()} sample", key=f"chk-sample-{sample_kind}"):
-            wait = ("Downloading about 300 MB, first run only..." if sample_kind == "sysid"
-                    else "Downloading the sample flights, first run only...")
-            with st.spinner(wait):
-                try:
-                    st.session_state[f"chk-result-{sample_kind}"] = cached_sample(sample_kind)
-                except Exception as e:  # no network, or a bad download, should not take the page down
-                    st.session_state[f"chk-result-{sample_kind}"] = CheckOutcome(
-                        error=f"Could not load the sample flights: {e}")
+
+    st.subheader("Try a sample flight")
+    st.caption("These are simulated flights with a known fault. The first run downloads them; later runs reuse them.")
+    for sample_kind, button_text in SAMPLES:
+        if st.button(button_text, key=f"chk-sample-{sample_kind}"):
+            wait = ("Downloading about 300 MB. This happens only on the first run..." if sample_kind == "sysid"
+                    else "Downloading the sample flights. This happens only on the first run...")
+            slot = st.empty()
+            slot.html(skeleton(wait))
+            try:
+                st.session_state[f"chk-result-{sample_kind}"] = cached_sample(sample_kind)
+                st.toast(f"The {CHECKS[sample_kind][0].lower()} sample is ready")
+            except Exception as e:  # no network, or a bad download, should not take the page down
+                st.session_state[f"chk-result-{sample_kind}"] = CheckOutcome(
+                    error=f"The sample flights could not be loaded: {e}")
+            slot.empty()
         if f"chk-result-{sample_kind}" in st.session_state:
             st.markdown(f"**Sample: {CHECKS[sample_kind][0]}**")
             show_check(st.session_state[f"chk-result-{sample_kind}"], sample_kind)
-    st.markdown("**Or check your own flights**")
+
+    st.subheader("Check your own flights")
     cand = st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
     base = st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
                             type=["bin"], accept_multiple_files=True, key="chk-baseline")
-    want_triage = st.checkbox("Also say whether a flagged result is likely real or noise", value=True,
+    want_triage = st.checkbox("Also judge whether a flagged result is real or just noise", value=True,
                               key="chk-triage")
     if cand is None:
         st.session_state.pop("chk-result-upload", None)
-        st.caption("Upload a new flight to start.")
+        st.caption("Upload a new flight to begin.")
     elif len(base) < MIN_BASELINE:
-        st.caption(f"Upload at least {MIN_BASELINE} earlier flights to compare against.")
+        st.caption(f"Upload at least {MIN_BASELINE} earlier flights to compare with.")
     elif st.button("Run check", type="primary", key="chk-run"):
         with tempfile.TemporaryDirectory() as tmp:
             paths = []
@@ -459,26 +880,26 @@ with tab_checks:
             try:
                 outcome = run_check(kind, paths[0], paths[1:], triage=want_triage)
             except Exception as e:  # a corrupt or unsupported log should not take the page down
-                outcome = CheckOutcome(error=f"Could not read these logs: {e}")
+                outcome = CheckOutcome(error=f"These logs could not be read: {e}")
         st.session_state["chk-result-upload"] = (outcome, kind)
     if "chk-result-upload" in st.session_state:
         shown_outcome, shown_kind = st.session_state["chk-result-upload"]
         show_check(shown_outcome, shown_kind)
 
-with tab_formats:
-    st.container(key="ae-intro-formats").markdown(
-        "ArduPilot records every flight twice: telemetry sent to the ground station (`.tlog`) and the "
-        "autopilot's own onboard log (`.bin`). The same two flights, read both ways:"
-    )
-    st.dataframe(pd.DataFrame([
-        {"": "time armed (s)", "boat .bin": 107.3, "boat .tlog": 107.0, "rover .bin": 243.1, "rover .tlog": 243.0},
-        {"": "mean cross-track error (m)", "boat .bin": 1.400, "boat .tlog": 1.405, "rover .bin": 0.598, "rover .tlog": 0.600},
-        {"": "worst cross-track error (m)", "boat .bin": 4.381, "boat .tlog": 4.381, "rover .bin": 2.959, "rover .tlog": 2.959},
-        {"": "lowest battery (V)", "boat .bin": 11.90, "boat .tlog": 11.90, "rover .bin": 12.53, "rover .tlog": 12.53},
-        {"": "in-flight mode changes", "boat .bin": 0, "boat .tlog": 0, "rover .bin": 17, "rover .tlog": 17},
-    ]), hide_index=True, width="stretch")
-    st.container(key="ae-note-formats").markdown(
-        "Where they disagree, the cause is known: DataFlash stores EKF variances at 0.01 resolution; "
-        "the `.bin` catches a half-second arm/disarm that 1 Hz telemetry misses; and DataFlash has error "
-        f"records telemetry doesn't carry. [Full output]({REPO}/blob/main/docs/cross-format-check.txt)"
-    )
+    with st.expander("Why the telemetry and onboard logs differ"):
+        st.markdown(
+            "ArduPilot records every flight twice: telemetry sent to the ground station (`.tlog`) and the "
+            "autopilot's own onboard log (`.bin`). The same two flights, read both ways:"
+        )
+        st.table(pd.DataFrame([
+            {"": "time armed (s)", "boat .bin": 107.3, "boat .tlog": 107.0, "rover .bin": 243.1, "rover .tlog": 243.0},
+            {"": "mean cross-track error (m)", "boat .bin": 1.400, "boat .tlog": 1.405, "rover .bin": 0.598, "rover .tlog": 0.600},
+            {"": "worst cross-track error (m)", "boat .bin": 4.381, "boat .tlog": 4.381, "rover .bin": 2.959, "rover .tlog": 2.959},
+            {"": "lowest battery (V)", "boat .bin": 11.90, "boat .tlog": 11.90, "rover .bin": 12.53, "rover .tlog": 12.53},
+            {"": "in-flight mode changes", "boat .bin": 0, "boat .tlog": 0, "rover .bin": 17, "rover .tlog": 17},
+        ]).style.hide(axis="index"))
+        st.markdown(
+            "Where they disagree, the cause is known: DataFlash stores EKF variances at 0.01 resolution; "
+            "the `.bin` catches a half-second arm/disarm that 1 Hz telemetry misses; and DataFlash has error "
+            f"records telemetry doesn't carry. [Full output]({REPO}/blob/main/docs/cross-format-check.txt)"
+        )

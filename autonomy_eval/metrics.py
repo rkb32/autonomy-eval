@@ -16,7 +16,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Iterable
 
-from .telemetry import Armed, Corrupt, Mode, Param, Reboot, Record, Sample, Text, VehicleType, is_dataflash, read
+from .telemetry import Armed, Corrupt, Mode, Param, Reboot, Record, Sample, Text, VehicleType, is_dataflash, is_ulog, read
 
 INFO, DEBUG = 6, 7  # MAV_SEVERITY levels; text with no severity is treated as INFO
 GRACE_S = 1.0     # heartbeats are 1 Hz, so the armed flag can lag the arm message by up to a second
@@ -50,10 +50,12 @@ class FlightSummary:
     severity: dict[str, int] = field(default_factory=dict)     # most severe level seen per message kind
     quality: dict[str, float] = field(default_factory=dict)    # about the recording, not the vehicle
     params: dict[str, float] = field(default_factory=dict)     # parameter values the vehicle flew with (.bin only)
+    event_first: dict[str, float] = field(default_factory=dict)  # seconds into the flight when each in-flight message first appeared
 
     @property
     def label(self) -> str:
-        return self.firmware or Path(self.source).stem
+        # A title is set by the app when several runs share a firmware label, so each one can still be told apart.
+        return getattr(self, "title", None) or self.firmware or Path(self.source).stem
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=1, sort_keys=True)
@@ -99,7 +101,16 @@ def in_intervals(t: float, intervals: list[tuple[float, float]], grace: float = 
 
 def summarize(path: str | Path) -> FlightSummary:
     s = summarize_records(read(path), str(path))
-    s.quality["format"] = "dataflash" if is_dataflash(path) else "tlog"
+    if is_ulog(path):
+        from .ulog import identity
+        s.vehicle, s.firmware = identity(path)
+        s.quality["format"] = "ulog"
+    else:
+        s.quality["format"] = "dataflash" if is_dataflash(path) else "tlog"
+    if s.quality["format"] != "tlog":
+        # "Mission Complete" is only in MAVLink telemetry text. DataFlash and ULog never carry it,
+        # so reporting 0 there would look like a real value. Absent means not measured.
+        s.metrics.pop("missions_completed", None)
     return s
 
 
@@ -113,6 +124,7 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
     sats: list[float] = []
     batt: list[float] = []
     clip = corrupt = reboots = 0
+    saw_armed = False      # a log with no arming records has no armed time, so the flight count means nothing
     end = 0.0
 
     for rec in records:
@@ -136,6 +148,7 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
         elif isinstance(rec, Param):
             s.params[rec.name] = rec.value            # the last value wins: that is what it ended up flying with
         elif isinstance(rec, Armed):
+            saw_armed = True
             if rec.armed and not armed:
                 armed_since = t
             elif armed and not rec.armed:
@@ -158,6 +171,7 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
         flights.append((armed_since, end))
 
     events: Counter[str] = Counter()
+    event_first: dict[str, float] = {}
     preflight: set[str] = set()
     errors = warnings = missions = waypoints = 0
     severity: dict[str, int] = {}
@@ -169,6 +183,9 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
             preflight.add(key)
             continue
         events[key] += 1
+        if key not in event_first:
+            start = next(a for a, b in flights if a - GRACE_S <= x.t <= b + GRACE_S)
+            event_first[key] = round(max(0.0, x.t - start), 1)
         errors += level <= 3
         warnings += level == 4
         missions += x.text.startswith("Mission Complete")
@@ -202,10 +219,67 @@ def summarize_records(records: Iterable[Record], source: str) -> FlightSummary:
     }
     s.metrics = {k: round(float(v), 4) for k, v in raw.items() if v is not None}
     s.events = dict(sorted(events.items()))
+    s.event_first = dict(sorted(event_first.items()))
     s.preflight = sorted(preflight)
     s.severity = dict(sorted(severity.items()))
     s.quality = {"log_duration_s": round(end, 1), "corrupt_frames": corrupt}
+    if not saw_armed:
+        s.quality["no_armed_state"] = 1.0
     return s
+
+
+# Metric name -> the sampled signal it summarizes, so the app can plot that metric through the flight.
+METRIC_SERIES = {
+    "xtrack_mean_m": "xtrack", "xtrack_p95_m": "xtrack", "xtrack_max_m": "xtrack",
+    "pos_err_mean_m": "pos_err", "pos_err_p95_m": "pos_err", "att_err_p95_deg": "att_err",
+    "vibe_p95": "vibe", "ekf_vel_var_p95": "ekf_vel", "ekf_pos_horiz_var_p95": "ekf_ph",
+    "ekf_pos_vert_var_p95": "ekf_pv", "ekf_compass_var_p95": "ekf_mag",
+    "gps_hdop_p95": "hdop", "gps_sats_min": "sats", "batt_min_v": "batt",
+}
+
+
+def timeline(path: str | Path) -> dict[str, dict[int, float]]:
+    """Each signal in METRIC_SERIES, averaged per second since arming. In-flight samples only, as in summarize()."""
+    records = list(read(path))
+    flights: list[tuple[float, float]] = []
+    armed, armed_since, end = False, 0.0, 0.0
+    for rec in records:
+        end = max(end, rec.t)
+        if isinstance(rec, Reboot) and armed:
+            flights.append((armed_since, rec.t))
+            armed = False
+        elif isinstance(rec, Armed):
+            if rec.armed and not armed:
+                armed_since = rec.t
+            elif armed and not rec.armed:
+                flights.append((armed_since, rec.t))
+            armed = rec.armed
+    if armed:
+        flights.append((armed_since, end))
+
+    wanted = set(METRIC_SERIES.values())
+    sums: dict[str, dict[int, list[float]]] = {}
+    for rec in records:
+        if not isinstance(rec, Sample) or rec.name not in wanted:
+            continue
+        for start, _stop in flights:
+            if start - GRACE_S <= rec.t <= _stop + GRACE_S:
+                acc = sums.setdefault(rec.name, {}).setdefault(max(0, int(rec.t - start)), [0.0, 0])
+                acc[0] += rec.value
+                acc[1] += 1
+                break
+    return {name: {sec: total / n for sec, (total, n) in per.items()} for name, per in sums.items()}
+
+
+def timeline_band(candidate: dict[int, float], baselines: list[dict[int, float]]) -> tuple[list[tuple[int, float]], list[tuple[int, float, float]]]:
+    """The candidate's line, and the baseline min-max band at each second where two or more baselines have data."""
+    line = sorted(candidate.items())
+    band = []
+    for sec in sorted({s for b in baselines for s in b}):
+        vals = [b[sec] for b in baselines if sec in b]
+        if len(vals) >= 2:
+            band.append((sec, min(vals), max(vals)))
+    return line, band
 
 
 def load(path: str | Path) -> FlightSummary:

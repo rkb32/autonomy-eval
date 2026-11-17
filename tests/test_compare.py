@@ -92,6 +92,15 @@ def test_scan_finds_the_odd_one_out():
     assert failed == ["odd"]
 
 
+def test_missions_are_compared_only_within_the_same_flight_count():
+    baseline = history(missions_completed=2, flights=2)
+    same = compare(run("new", missions_completed=0, flights=2), baseline)
+    assert [f.metric for f in same.findings] == ["missions_completed"]
+    other = compare(run("new", missions_completed=0, flights=20), baseline)
+    assert not any(f.metric == "missions_completed" for f in other.findings)
+    assert any("missions completed not compared" in w for w in other.warnings)
+
+
 def test_mixing_log_formats_is_flagged_as_a_caveat():
     candidate = run("new")
     candidate.quality = {"format": "dataflash"}

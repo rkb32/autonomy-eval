@@ -22,9 +22,30 @@ from pymavlink import DFReader
 
 from .telemetry import Armed, Clock, Mode, Param, Reboot, Record, Sample, Text, TextAssembler, VehicleType
 
-ERROR = 3  # MAV_SEVERITY_ERROR
+CRITICAL, ERROR, WARNING = 2, 3, 4  # MAV_SEVERITY levels
 BANNER_RE = re.compile(r"^(ArduCopter|ArduPlane|ArduRover|ArduSub|Blimp|AntennaTracker) V")
 RELAYED_RE = re.compile(r"^SRC=\d+/\d+:")
+
+# DataFlash text has no severity, so these keyword rules give the lines a regression gate should see.
+# Checked only against the rule's own unit tests, not against real .bin text (README "Known gaps").
+TEXT_SEVERITY_RULES = [
+    (re.compile(r"crash", re.I), CRITICAL),
+    (re.compile(r"failsafe", re.I), WARNING),
+    (re.compile(r"^EKF.*\b(bad|unhealthy|lost)\b", re.I), WARNING),
+    (re.compile(r"\berror\b", re.I), ERROR),
+    (re.compile(r"\bwarning\b", re.I), WARNING),
+    (re.compile(r"\bfailed\b", re.I), WARNING),     # e.g. "Flight mode change failed"
+    (re.compile(r"\btimeout\b", re.I), WARNING),    # e.g. "Fence upload timeout"
+    (re.compile(r"\bnot received\b", re.I), WARNING),  # e.g. "target not received last N secs, stopping"
+]
+
+
+def text_severity(text: str) -> int | None:
+    """The severity a DataFlash text line implies from its wording, or None when it implies nothing."""
+    for pattern, level in TEXT_SEVERITY_RULES:
+        if pattern.search(text):
+            return level
+    return None
 
 # FRAME_CLASS -> the MAV_TYPE the same firmware puts in its heartbeat. Frames not listed come out
 # as unknown rather than guessed.
@@ -88,6 +109,8 @@ def _read(log) -> Iterator[Record]:
                 yield from _vehicle_type(t, firmware, frame_class)
             for text in texts.feed(t, getattr(m, "ID", 0), None, m.Message):
                 if not RELAYED_RE.match(text.text):
+                    if text.severity is None:
+                        text = Text(text.t, text_severity(text.text), text.text)
                     yield text
         elif kind == "PARM":
             yield Param(t, m.Name, float(m.Value))
