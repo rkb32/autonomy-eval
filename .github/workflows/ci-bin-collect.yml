@@ -1,0 +1,61 @@
+name: Collect CI .bin logs
+
+# Saves the ArduPilot autotest .BIN logs for two tests each day, so there is a real .bin baseline.
+# The server overwrites these logs daily, so a missed day cannot be fetched again. Each day's logs
+# go into one zip attached to the release "ci-bin-collection", which does not expire. The log numbers
+# are sequence numbers, so each day's zip is a full snapshot, dated in its name. Scheduled runs only
+# fire from the default branch.
+on:
+  schedule:
+    - cron: "17 6 * * *"   # 06:17 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Download the day's Rover-Scripting and TerrainFailsafe logs
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          curl -fsS --retry 3 -m 120 -o index.html https://autotest.ardupilot.org/
+          grep -oE 'Rover-Scripting-[0-9]{8}\.BIN|ArduCopter-TerrainFailsafe-[0-9]{8}\.BIN' index.html | sort -u > files.txt
+          echo "files listed: $(wc -l < files.txt)"
+          # curl --retry does not cover a connection reset mid-download (run 43900362913 died on one file),
+          # so each file gets its own retries with a growing pause.
+          fetch() {
+            for attempt in 1 2 3 4 5; do
+              curl -fsS -m 120 -o "$2" "$1" && return 0
+              echo "retry $attempt for $(basename "$2")" >&2
+              sleep $((attempt * 10))
+            done
+            return 1
+          }
+          while read -r f; do
+            fetch "https://autotest.ardupilot.org/$f" "bin/$f"
+          done < files.txt
+          cp files.txt bin/_listing.txt
+          (cd bin && sha256sum *.BIN > ../manifest.sha256)
+          echo "run date (UTC): $(date -u +%F)" > bin/_run.txt
+          echo "total size: $(du -sh bin | cut -f1)"
+
+      - name: Attach the day's logs to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          day="$(date -u +%F)"
+          zipfile="ci-bin-$day.zip"
+          (cd bin && zip -qr "../$zipfile" . -x '*.zip') && zip -q "$zipfile" manifest.sha256
+          tag="ci-bin-collection"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "CI .bin collection" \
+            --notes "Daily snapshots of the ArduPilot autotest .BIN logs for Rover-Scripting and ArduCopter-TerrainFailsafe. One zip per day; each zip is a full snapshot with a sha256 manifest." \
+            --latest=false
+          gh release upload "$tag" "$zipfile" --repo "$GITHUB_REPOSITORY" --clobber
+          ls -l "$zipfile"
