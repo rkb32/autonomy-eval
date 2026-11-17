@@ -14,7 +14,6 @@ import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 from autonomy_eval import bisect as bisect_mod
 from autonomy_eval.checks import CHECKS, CheckOutcome, run_check, run_sample
@@ -96,7 +95,7 @@ KEYS_JS = """
 })();
 </script>
 """
-components.html(KEYS_JS, height=0)
+st.iframe(KEYS_JS, height=1)
 
 
 def skeleton(text: str) -> str:
