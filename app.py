@@ -22,6 +22,7 @@ from autonomy_eval.metrics import METRIC_SERIES, FlightSummary, load, timeline, 
 from autonomy_eval.report import LABELS, SEVERITY
 from autonomy_eval import batch, flightdata
 from autonomy_eval.health import timing_health
+from autonomy_eval.privacy import memo, read_in_temp, uploads_enabled, wipe
 from autonomy_eval.signals import arm_time, list_signals, read_signal
 
 EXAMPLES = Path(__file__).parent / "examples"
@@ -31,6 +32,8 @@ HISTORIES = {
     "Ground rover - 8 daily builds": "ardurover-ground-rover",
 }
 STATUS_COLORS = {"REGRESSED": "#E5484D", "changed": "#D9A441", "ok": "#8B929C"}
+# Session-state keys that hold results derived from uploaded logs (see show_bisection and session_ai_verdict).
+UPLOAD_RESULT_KEYS = ("lookup|", "ai-verdict|", "looked-up|", "btn|")
 SAMPLES = [
     ("sysid", "Run the stability sample (about 300 MB; the first run is slow)"),
     ("nees", "Run the estimator sample"),
@@ -165,20 +168,53 @@ def metric_chart(results: list[Comparison], metric: str) -> alt.Chart:
     return (line + median + dots).properties(height=300)
 
 
-@st.cache_data(show_spinner="Checking the ArduPilot commit history...")
-def cached_bisection(metric: str, base: str, head: str):
+class _NotCached(Exception):
+    """Raised inside a cached function, so Streamlit keeps no entry for a failed lookup."""
+
+
+@st.cache_data(ttl=3600, show_spinner="Checking the ArduPilot commit history...")
+def _public_lookup(metric: str, base: str, head: str):
+    # Public example histories only: ArduPilot commit messages and file names, by build SHA. Nothing from
+    # an uploaded log reaches this function, so sharing its result between visitors is safe.
     b = bisect_mod.localize(metric, base, head)
-    if b is not None and not b.error:
-        b.ai = bisect_mod.ai_verdict(b)
+    if b is not None and b.error:
+        raise _NotCached(b)
     return b
 
 
-def show_bisection(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
+def cached_bisection(metric: str, base: str, head: str):
+    try:
+        return _public_lookup(metric, base, head)
+    except _NotCached as e:
+        return e.args[0]
+
+
+def session_ai_verdict(b):
+    """The AI read, only if the operator opted in (see bisect.AI_OPT_IN_ENV). Kept per session, and the
+    shared bisection result is never changed, so one user's read is never shown to another."""
+    key = f"ai-verdict|{b.metric}|{b.base}|{b.head}"
+    if key not in st.session_state:
+        st.session_state[key] = bisect_mod.ai_verdict(b)
+    return st.session_state[key]
+
+
+def show_bisection(c: Comparison, ordered_runs: list[FlightSummary], public: bool) -> None:
     pair = bisect_mod.neighbor_build(c.candidate, ordered_runs)
     if pair is None:
         return
     base, head = pair
-    b = cached_bisection(c.regressions[0].metric, base.label, head.label)
+    metric = c.regressions[0].metric
+    if public:
+        b = cached_bisection(metric, base.label, head.label)
+    else:
+        # Your log's build SHAs go to GitHub only when you press this button.
+        asked = f"looked-up|{metric}|{base.label}|{head.label}"
+        if st.button("Look up the likely commits on GitHub", key=f"btn|{asked}",
+                     help="Sends the two build SHAs from your log to GitHub. Nothing else from the log is sent."):
+            st.session_state[asked] = True
+        if not st.session_state.get(asked):
+            return
+        b = bisect_mod.lookup(metric, base.label, head.label, st.session_state)
     if b is None:
         return
     st.markdown(f"**Possible cause** ([{b.base}...{b.head}]({b.compare_url}))")
@@ -187,13 +223,17 @@ def show_bisection(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         return
     if not b.suspects:
         st.caption(f"None of the {b.total_commits} commits in this range touch code related to "
-                   f"{label(c.regressions[0].metric)}, which points to noise rather than a firmware bug.")
+                   f"{label(metric)}, which points to noise rather than a firmware bug.")
     else:
         st.caption(f"{len(b.suspects)} of {b.total_commits} commits touch related code:")
         for s in b.suspects:
             st.markdown(f"- `{s.sha}` {s.message}: {', '.join(s.files)}")
-    if b.ai:
-        st.markdown(f"**AI read: {b.ai.label}.** {b.ai.reason}")
+    if bisect_mod.ai_enabled():
+        st.caption("AI read is on (AUTONOMY_EVAL_SEND_TO_AI=1): the metric name and the commit messages and file "
+                   "names above are sent to Anthropic. No log contents.")
+    ai = session_ai_verdict(b)
+    if ai:
+        st.markdown(f"**AI read: {ai.label}.** {ai.reason}")
 
 
 def findings_table(c: Comparison) -> pd.DataFrame:
@@ -243,7 +283,7 @@ def show_timeline(c: Comparison) -> None:
         st.altair_chart(chart, width="stretch")
 
 
-def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
+def show_detail(c: Comparison, ordered_runs: list[FlightSummary], public: bool) -> None:
     cand = c.candidate
     st.markdown(f"**{cand.label}** ({vehicle_kind(cand.vehicle, cand.mav_type)}), compared with "
                 f"{len(c.baseline)} other runs: {', '.join(b.label for b in c.baseline)}")
@@ -256,7 +296,7 @@ def show_detail(c: Comparison, ordered_runs: list[FlightSummary]) -> None:
         st.table(findings_table(c).style.hide(axis="index"))
         show_timeline(c)
     if c.regressions:
-        show_bisection(c, ordered_runs)
+        show_bisection(c, ordered_runs, public)
     if c.new_alarms:
         st.error("These warnings or errors have never appeared in the other runs:\n\n" +
                  "\n".join(f"- [{SEVERITY[m.severity]}] {m.text}{first_seen(cand, m.text)}" for m in c.new_alarms))
@@ -277,32 +317,25 @@ def cached_sample(kind: str) -> CheckOutcome:
     return run_sample(kind)
 
 
-def in_temp_file(name: str, data: bytes, fn, *args):
-    """Run a reader that needs a file path, on the uploaded bytes."""
-    with tempfile.TemporaryDirectory() as tmp:
-        p = Path(tmp) / Path(name).name
-        p.write_bytes(data)
-        return fn(p, *args)
-
-
-@st.cache_data(show_spinner="Reading the message list...")
+# The readers below take uploaded bytes. They are remembered per session only (privacy.memo), never in a
+# Streamlit cache, which would be shared between users and kept for the life of the server.
 def log_signals(name: str, data: bytes) -> dict[str, list[str]]:
-    return in_temp_file(name, data, list_signals)
+    with st.spinner("Reading the message list..."):
+        return memo(st.session_state, list_signals, name, data)
 
 
-@st.cache_data(show_spinner="Reading the signal from the log...")
 def log_signal(name: str, data: bytes, msg: str, field: str):
-    return in_temp_file(name, data, read_signal, msg, field)
+    with st.spinner("Reading the signal from the log..."):
+        return memo(st.session_state, read_signal, name, data, msg, field)
 
 
-@st.cache_data(show_spinner=False)
 def log_arm_time(name: str, data: bytes):
-    return in_temp_file(name, data, arm_time)
+    return memo(st.session_state, arm_time, name, data)
 
 
-@st.cache_data(show_spinner="Reading scheduler and IMU timing...")
 def log_health(name: str, data: bytes):
-    return in_temp_file(name, data, timing_health)
+    with st.spinner("Reading scheduler and IMU timing..."):
+        return memo(st.session_state, timing_health, name, data)
 
 
 @st.fragment
@@ -329,10 +362,10 @@ def health_section(bins: list) -> None:
                "Use logs from real hardware to see a real change in load.")
 
 
-@st.cache_data(show_spinner="Reading the flight...")
 def fd_call(name: str, data: bytes, fn_name: str, args: tuple = ()):
-    """Run one flightdata reader on the uploaded bytes, cached per log and call."""
-    return in_temp_file(name, data, getattr(flightdata, fn_name), *args)
+    """Run one flightdata reader on the uploaded bytes, remembered for this session only."""
+    with st.spinner("Reading the flight..."):
+        return memo(st.session_state, getattr(flightdata, fn_name), name, data, *args)
 
 
 def _thin(df: pd.DataFrame, limit: int = 4000) -> pd.DataFrame:
@@ -503,7 +536,7 @@ def views_section(bins: list) -> None:
         for n in picked:
             d = next(f.getvalue() for f in bins if f.name == n)
             try:
-                f, p, fs = in_temp_file(n, d, batch.batch_spectrum, 0)
+                f, p, fs = read_in_temp(n, d, batch.batch_spectrum, 0)
                 source = "sensor-rate batches"
             except ValueError:
                 try:
@@ -661,7 +694,7 @@ def show_check(outcome: CheckOutcome, kind: str) -> None:
 
 @st.fragment
 def detail_section(results: list[Comparison], runs: list[FlightSummary], key: str,
-                   default_metric: str | None, worst: str) -> None:
+                   default_metric: str | None, worst: str, public: bool) -> None:
     """Chart and per-run detail. A fragment, so changing a selector does not rerun the whole page."""
     labels = [c.candidate.label for c in results]
     flagged_metrics = [f.metric for c in results for f in c.findings if not f.metric.startswith("event:")]
@@ -673,7 +706,7 @@ def detail_section(results: list[Comparison], runs: list[FlightSummary], key: st
                               format_func=label, key=f"{key}-metric")
         st.altair_chart(metric_chart(results, metric), width="stretch")
         choice = st.selectbox("Pick one build to look at closely", labels, index=labels.index(worst), key=f"{key}-detail")
-        show_detail(next(c for c in results if c.candidate.label == choice), runs)
+        show_detail(next(c for c in results if c.candidate.label == choice), runs, public)
 
 
 def stat_cards(regressed: int, changed: int, ok: int, total: int) -> None:
@@ -688,7 +721,9 @@ def stat_cards(regressed: int, changed: int, ok: int, total: int) -> None:
             + card("Changed", changed) + card("OK", ok) + "</div>")
 
 
-def results_section(runs: list[FlightSummary], key: str, default_metric: str | None = None) -> None:
+def results_section(runs: list[FlightSummary], key: str, default_metric: str | None = None,
+                    public: bool = True) -> None:
+    """public=True only for the bundled example histories. Anything uploaded passes public=False."""
     results = scan(runs)
     df = scan_table(results)
     counts = {s: sum(status(c) == s for c in results) for s in ("REGRESSED", "changed", "ok")}
@@ -718,7 +753,7 @@ def results_section(runs: list[FlightSummary], key: str, default_metric: str | N
         )
     st.download_button("Download this table (CSV)", data=df.to_csv(index=False).encode("utf-8"),
                        file_name=f"{key}-builds.csv", mime="text/csv", key=f"{key}-csv")
-    detail_section(results, runs, key, default_metric, worst)
+    detail_section(results, runs, key, default_metric, worst, public)
 
 
 st.html(
@@ -762,6 +797,9 @@ with tab_ci:
         )
 
 with tab_upload:
+    if not uploads_enabled():
+        st.info("Uploads are turned off on this hosted copy, so no one's flight log is sent to it. To check your "
+                "own logs, run the app on your computer (see Privacy and data handling in the README).")
     st.markdown(f"To compare runs, upload at least {MIN_BASELINE + 1} logs of the **same vehicle and mission**.")
     st.markdown(
         "- **Formats:** MAVLink telemetry (`.tlog`), ArduPilot DataFlash logs (`.bin`), PX4 ULog logs (`.ulg`), "
@@ -769,10 +807,20 @@ with tab_upload:
         "autopilots record: armed time, battery, GPS, flight mode and messages.\n"
         "- **Oldest build first.** The possible cause of a regression comes from the commits between it and the "
         "build just before it.\n"
-        "- **Private:** your files are read into memory for this session only and are never kept."
+        + ("- **Private:** your files are read into memory for this session only and are never kept."
+           if uploads_enabled() else "")
     )
-    files = st.file_uploader("Flight logs", type=["tlog", "bin", "ulg", "json"], accept_multiple_files=True)
-    if not files:
+    files = (st.file_uploader("Flight logs", type=["tlog", "bin", "ulg", "json"], accept_multiple_files=True)
+             if uploads_enabled() else None)
+    # A removed file must not leave its results behind, so forget them whenever the set of files changes.
+    names = tuple(sorted(f.name for f in files or []))
+    if st.session_state.get("_upload_names") != names:
+        wipe(st.session_state)
+        for k in [k for k in st.session_state.keys() if k.startswith(UPLOAD_RESULT_KEYS)]:
+            del st.session_state[k]
+        st.session_state.pop("summary_text", None)
+        st.session_state["_upload_names"] = names
+    if not files and uploads_enabled():
         st.info("No logs yet? The Example result tab (press 1) shows the same comparison on real build history.")
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):
         runs, failed = [], []
@@ -810,6 +858,7 @@ with tab_upload:
         st.session_state["uploaded_runs"] = runs
     if not files:
         st.session_state.pop("uploaded_runs", None)   # cleared files must clear the old results too
+        wipe(st.session_state)                        # and nothing remembered from them stays in the session
     runs = st.session_state.get("uploaded_runs", [])
     groups: dict[tuple, list[FlightSummary]] = {}
     for r in runs:
@@ -820,7 +869,7 @@ with tab_upload:
             st.warning(f"Upload more than {MIN_BASELINE} logs of this vehicle to compare them. Each log's own numbers are below.")
             st.dataframe(log_numbers(group))
             continue
-        results_section(group, key=f"upload-{vehicle}-{mav_type}")
+        results_section(group, key=f"upload-{vehicle}-{mav_type}", public=False)
     bins = [f for f in (files or []) if f.name.lower().endswith(".bin")]
     if bins:
         signal_section(bins)
@@ -857,9 +906,13 @@ with tab_checks:
             show_check(st.session_state[f"chk-result-{sample_kind}"], sample_kind)
 
     st.subheader("Check your own flights")
-    cand = st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
-    base = st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
-                            type=["bin"], accept_multiple_files=True, key="chk-baseline")
+    if not uploads_enabled():
+        st.info("Uploads are turned off on this hosted copy. Run the app on your computer to check your own flights.")
+    cand = (st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
+            if uploads_enabled() else None)
+    base = (st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
+                             type=["bin"], accept_multiple_files=True, key="chk-baseline")
+            if uploads_enabled() else [])
     want_triage = st.checkbox("Also judge whether a flagged result is real or just noise", value=True,
                               key="chk-triage")
     if cand is None:

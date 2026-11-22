@@ -4,10 +4,10 @@ Build labels are ArduPilot git short SHAs (see FlightSummary.label), so the comm
 the last clean build and a flagged one is a real, fetchable thing -- this is how the cross-track
 regression in the README was traced, by hand, to a GitHub compare link. `localize()` automates
 that: it fetches the range from GitHub, keeps only commits that touch source directories plausibly
-related to the metric that regressed, and (if ANTHROPIC_API_KEY is set) asks a model for a single
-"likely true/false positive" read grounded only in those commit messages and files -- never asked
-to invent ArduPilot internals it wasn't given. Skipped silently without a key, like summarize()
-in sam-tracker.
+related to the metric that regressed, and (only if ANTHROPIC_API_KEY is set AND AUTONOMY_EVAL_SEND_TO_AI=1)
+asks a model for a single "likely true/false positive" read grounded only in those commit messages
+and files -- never asked to invent ArduPilot internals it wasn't given. The AI call sends the metric
+name and commit data (never log contents), and it is off unless both settings are present.
 
 This is a lead, not a diagnosis: a commit touching the right directory is a place to look, not
 proof. The AI verdict is the same kind of lead, one level more digested.
@@ -28,6 +28,9 @@ from .metrics import FlightSummary
 REPO = "ArduPilot/ardupilot"
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 MAX_COMMITS = 25  # bound on per-commit API calls; wider ranges are reported but not localized
+# The AI read sends the metric name and commit data to Anthropic. It needs this opt-in as well as the
+# key, so having a key in the environment for another tool never sends anything.
+AI_OPT_IN_ENV = "AUTONOMY_EVAL_SEND_TO_AI"
 
 # Metric prefix -> source directories whose changes could plausibly explain it. Verified against
 # the real ardupilot/libraries tree; a metric with no entry here isn't localized.
@@ -134,8 +137,24 @@ SYSTEM = (
 )
 
 
+def ai_enabled() -> bool:
+    return bool(os.environ.get("ANTHROPIC_API_KEY")) and os.environ.get(AI_OPT_IN_ENV) == "1"
+
+
+def lookup(metric: str, base: str, head: str, store) -> Bisection | None:
+    """localize(), remembered in `store` (one session's mapping) only when it succeeds. A failed or
+    rate-limited lookup is not kept, so the next try asks GitHub again."""
+    key = f"lookup|{metric}|{base}|{head}"
+    if key in store:
+        return store[key]
+    b = localize(metric, base, head)
+    if b is not None and not b.error:
+        store[key] = b
+    return b
+
+
 def ai_verdict(b: Bisection) -> AIVerdict | None:
-    if b.error or not os.environ.get("ANTHROPIC_API_KEY"):
+    if b.error or not ai_enabled():
         return None
     import anthropic
 

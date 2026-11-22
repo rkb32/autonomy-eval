@@ -103,6 +103,7 @@ def test_ai_verdict_skipped_when_localize_already_errored(monkeypatch):
 
 def test_ai_verdict_parses_the_model_json_response(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv(bisect.AI_OPT_IN_ENV, "1")
     b = bisect.Bisection("xtrack_mean_m", "bf08027", "b2b1b3d", "https://x", total_commits=2,
                           suspects=[bisect.SuspectCommit("2222222b", "AC_WPNav: fix a sign error", ["libraries/AC_WPNav/AC_WPNav.cpp"])])
     reply = json.dumps({"verdict": "likely true positive", "reason": "touches the L1 gain directly"})
@@ -116,6 +117,7 @@ def test_ai_verdict_parses_the_model_json_response(monkeypatch):
 
 def test_ai_verdict_fails_closed_on_bad_json(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv(bisect.AI_OPT_IN_ENV, "1")
     b = bisect.Bisection("xtrack_mean_m", "bf08027", "b2b1b3d", "https://x")
     fake_response = SimpleNamespace(content=[SimpleNamespace(type="text", text="not json")])
     with patch("anthropic.Anthropic") as Client:

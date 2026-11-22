@@ -67,10 +67,11 @@ That one commit only relocates a parameter table; it doesn't touch control logic
 same conclusion the hand-written paragraph reached. A directory match is a lead, not a verdict --
 `AC_PosControl.cpp` is in the right neighborhood but the change itself is a memory-layout change.
 That's a real limitation of matching by file path alone, which is why `--bisect` will also ask a
-model for a single "likely true positive / likely false positive" read if `ANTHROPIC_API_KEY` is
-set, grounded only in the commit messages and files it was just given (it's told explicitly not to
-invent ArduPilot internals it wasn't shown). Skipped silently without a key. Both are leads for a
-person to check, not a diagnosis: a commit touching the right file is worth reading, not proof.
+model for a single "likely true positive / likely false positive" read, grounded only in the commit
+messages and files it was just given (it's told explicitly not to invent ArduPilot internals it
+wasn't shown). It runs only if both `ANTHROPIC_API_KEY` and `AUTONOMY_EVAL_SEND_TO_AI=1` are set, and
+the app says so when it sends. Both are leads for a person to check, not a diagnosis: a commit
+touching the right file is worth reading, not proof.
 
 When a build is the *first* one in the history (as bf080274 is here), there's no earlier build in
 the dataset to diff against, so `--bisect` checks the range to the *next* build instead -- the same
@@ -160,6 +161,49 @@ what the autopilot writes to its SD card), or saved `.json` summaries so CI does
 history. The format is detected from the file's contents, not its name.
 
 To pull fresh runs from ArduPilot CI: `python scripts/fetch_autotest.py ArduCopter-TerrainFailsafe`.
+
+## Privacy and data handling
+
+Flight logs can hold sensitive telemetry, so this is what the code does and does not do. These
+statements describe the code in this repository; they are not a guarantee about any server you run it on.
+
+**Running it locally (`streamlit run app.py`, the CLI).**
+- An uploaded log is written to a temporary directory only while it is read. The directory is deleted
+  when the read finishes, including when it fails. The app writes nothing else to disk, apart from the
+  public sample downloads.
+- A reader's result (for example a signal or a timing table) is kept only in your browser session, in
+  a small bounded memory that is cleared when you remove the files and freed when the session ends.
+  It is not shared with other sessions and is not in any cache that outlives the session.
+- Reading an uploaded log makes no network request. A test checks the reader path with the network blocked.
+
+**Using the hosted Streamlit demo.**
+- A hosted copy must set `AUTONOMY_EVAL_HOSTED=1`. Then the upload boxes are removed and the app
+  accepts no log from any visitor. The hosted demo shows only the bundled public histories and samples.
+- Anyone who runs the app on their own machine, without that setting, gets the upload boxes. Only the
+  copy you run locally sees your files.
+
+**Optional outbound requests.**
+- Looking up the likely commits (bisection) queries GitHub for the commit range between two build SHAs
+  from the firmware string of the uploaded log. For your own uploads it runs only when you press
+  "Look up the likely commits on GitHub". The request contains the two SHAs and no log contents.
+- The stability sample flights are downloaded from this repository's public release on first use.
+- The AI read sends Anthropic the metric name, commit count, and suspect commit messages and file paths.
+  It never sends log contents. It is off unless you set both `ANTHROPIC_API_KEY` and
+  `AUTONOMY_EVAL_SEND_TO_AI=1`, and the app shows a note whenever it is on.
+
+**Limits.**
+- Memory: an uploaded file and its derived results sit in the server's memory while the session
+  lasts. The app does not encrypt memory and does not wipe it on a crash.
+- Streamlit keeps its own copy of an uploaded file until the session ends. The app cannot remove that.
+- File names you upload appear in the results and in the summary you can download.
+- Build labels come from the firmware string in the log, so a GitHub lookup reveals which ArduPilot build
+  you ran. Nothing else from the log leaves the machine.
+
+**What you can say to someone sharing real flight logs.** Analysing an upload with the app or the CLI
+does not send the log anywhere. Results stay in your session, and the temporary copy is deleted after
+each read. Optional lookups send build labels to GitHub and, only if you turn the AI read on, metric
+names and commit data to Anthropic. Do not say the hosted demo never keeps data, or that nothing is ever
+retained.
 
 ## Six things the real data got wrong that a demo wouldn't have
 
