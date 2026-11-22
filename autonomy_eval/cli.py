@@ -249,7 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--json", action="store_true")
     c.add_argument("--bisect", action="store_true",
                     help="for a regression, fetch the GitHub commits between the last baseline build and this "
-                         "one that touch related code (needs network; ANTHROPIC_API_KEY adds a likely-TP/FP read)")
+                         "one that touch related code (needs network; the likely-TP/FP read also needs "
+                         "ANTHROPIC_API_KEY and AUTONOMY_EVAL_SEND_TO_AI=1, and sends metric names and commit data)")
     c.set_defaults(fn=cmd_check)
 
     sc = sub.add_parser("scan", help="find the odd run out in a history of runs")
