@@ -42,6 +42,21 @@ def test_temp_file_is_removed_after_an_exception():
     assert not seen["path"].parent.exists()
 
 
+def test_temp_file_is_removed_after_a_real_read_failure():
+    # An empty .bin makes the real reader fail after it has opened the file. On Windows the open file
+    # used to block the folder's removal, so the upload stayed on disk.
+    seen = {}
+
+    def reader(path):
+        seen["path"] = path
+        return load(path)
+
+    with pytest.raises(ValueError):
+        privacy.read_in_temp("empty.bin", b"", reader)
+    assert not seen["path"].exists()
+    assert not seen["path"].parent.exists()
+
+
 def test_upload_name_cannot_escape_the_temp_directory():
     seen = {}
 

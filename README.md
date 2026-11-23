@@ -183,7 +183,7 @@ Flight logs can hold sensitive data. This is what the app does with them. It des
 
 **Your own computer**
 
-Running the app on your computer keeps your files on your computer. The only exceptions are the GitHub lookup and the AI read, and only if you use them.
+Running the app on your computer keeps your files on your computer. The only exceptions are the GitHub lookup and the AI read, and only if you use them, and the sample-flight download, which happens only when you press a sample button (it fetches files from GitHub; it sends none of your data).
 
 ## Six things the real data got wrong that a demo wouldn't have
 

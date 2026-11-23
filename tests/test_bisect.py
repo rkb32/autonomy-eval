@@ -3,7 +3,6 @@ import urllib.error
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
 
 from autonomy_eval import bisect
 from autonomy_eval.metrics import FlightSummary

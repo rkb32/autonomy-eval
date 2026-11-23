@@ -14,6 +14,7 @@ proof. The AI verdict is the same kind of lead, one level more digested.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -104,6 +105,11 @@ def _opener():
     return urllib.request.build_opener(_GitHubOnlyRedirects)
 
 
+# Anything a GitHub lookup can fail with: network and TLS errors (OSError, which includes URLError),
+# a body cut short (HTTPException, e.g. IncompleteRead), and a body that is not JSON (ValueError).
+_LOOKUP_ERRORS = (OSError, http.client.HTTPException, ValueError)
+
+
 def _subsystem_dirs(metric: str) -> tuple[str, ...] | None:
     return next((dirs for prefix, dirs in SUBSYSTEMS.items() if metric.startswith(prefix)), None)
 
@@ -117,7 +123,7 @@ def localize(metric: str, base: str, head: str) -> Bisection | None:
     b = Bisection(metric, base, head, f"https://github.com/{REPO}/compare/{base}...{head}")
     try:
         cmp = _get(f"https://api.github.com/repos/{REPO}/compare/{base}...{head}")
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+    except _LOOKUP_ERRORS as e:
         b.error = f"couldn't reach GitHub: {e}"
         return b
     commits = cmp.get("commits", [])
@@ -129,7 +135,7 @@ def localize(metric: str, base: str, head: str) -> Bisection | None:
     for c in commits:
         try:
             detail = _get(f"https://api.github.com/repos/{REPO}/commits/{c['sha']}")
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        except _LOOKUP_ERRORS:
             failed += 1          # a failed lookup must not look like "no suspects"
             continue
         files = [f["filename"] for f in detail.get("files", [])]

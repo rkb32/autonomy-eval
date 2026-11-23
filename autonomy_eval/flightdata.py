@@ -36,7 +36,10 @@ def read_fields(path: str | Path, msg: str, fields: list[str]):
                 break
             t.append(m.TimeUS / 1e6)
             for f in fields:
-                cols[f].append(float(getattr(m, f, np.nan)))
+                try:
+                    cols[f].append(float(getattr(m, f, np.nan)))
+                except TypeError:  # an array-type field (e.g. ISBD samples) is not one number per row
+                    raise ValueError(f"{msg}.{f} is not a single number, so it cannot be plotted") from None
     finally:
         log.close()
     return np.asarray(t), {f: np.asarray(v) for f, v in cols.items()}

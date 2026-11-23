@@ -14,11 +14,16 @@ upload while it is in memory, and they do not cover Streamlit's own copy of the 
 from __future__ import annotations
 
 import copy
+import gc
 import hashlib
 import os
+import shutil
 import tempfile
+import time
+import traceback
 from collections import OrderedDict
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Iterator, MutableMapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -37,11 +42,42 @@ def uploads_enabled() -> bool:
     return os.environ.get(HOSTED_ENV) != "1"
 
 
+@contextmanager
+def temp_folder() -> Iterator[Path]:
+    """A temporary folder, removed on exit even if the caller raised.
+
+    On Windows a reader that fails while opening a file can leave the file open, and an open file
+    cannot be deleted. So a failure first drops the frames it left behind, and removal runs the
+    garbage collector and retries before giving up."""
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        yield tmp
+    except BaseException as e:
+        traceback.clear_frames(e.__traceback__)
+        raise
+    finally:
+        _remove_folder(tmp)
+
+
+def _remove_folder(folder: Path) -> None:
+    for attempt in range(5):
+        gc.collect()
+        try:
+            shutil.rmtree(folder)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.2)
+
+
 def read_in_temp(name: str, data: bytes, reader: Callable[..., Any], *args: Any) -> Any:
     """Run `reader(path, *args)` on the uploaded bytes, written to a temporary directory that is
     removed afterwards, even if the reader raises."""
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / Path(name).name
+    with temp_folder() as tmp:
+        path = tmp / Path(name).name
         path.write_bytes(data)
         return reader(path, *args)
 
