@@ -273,16 +273,18 @@ written.
 - `.bin` support is validated on two flights recorded in both formats, not on a history of builds:
   the CI server overwrites `.bin` logs daily, so a `.bin` baseline has to be collected over days.
 - DataFlash text has no severity. In `.bin` logs, text gets a severity only from keyword rules
-  (`text_severity` in `autonomy_eval/dataflash.py`, e.g. "crash", "failsafe", "error"). Those rules are
-  checked only by their unit tests, not against real `.bin` text, so a new warning worded differently
-  still won't fail the build.
-- It has not yet caught a **confirmed** firmware regression in the wild; detection is validated
+  (`text_severity` in `autonomy_eval/dataflash.py`, e.g. "crash", "failsafe", "error"). Chunked text is
+  joined before matching, and a test checks that on a real boot log. The keyword list is checked only by
+  unit tests, so a new warning worded differently still won't fail the build.
+- Validated on injected faults only. It has not yet caught a **confirmed** firmware regression in the wild; detection is validated
   against injected SITL faults of known size (table above), and the one CI anomaly it found traces
   to simulator nondeterminism.
 - The minimum-change floors are absolute and hand-set for real hardware. SITL baselines are far
   quieter (vibration floor 1.0 m/s/s vs a SITL baseline of 0.05), so mild simulated faults can sit
   under them — that's why the 0.4 roll-gain level isn't flagged. Whether floors should scale with
-  the baseline is an open design question.
+  the baseline is an open design question. A `sim=True` option (`compare` in `autonomy_eval/compare.py`)
+  already uses a floor of 10 baseline median-absolute-deviations for simulated baselines. It is not on the
+  command line, and its false-alarm rate is not measured yet.
 - **Motor vibration is not benchmarked.** The accelerometer row (table above) reproduces: with `SIM_VIB_FREQ_X/Y/Z=100`,
   `SIM_ACC1_RND` 1.5, 4 and 10 give vibration p95 1.1, 2.92–2.93 and 7.31–7.32 m/s/s over 3 runs each, matching the 1.10, 2.92 and 7.30 in the table. The v2 batch set
   `SIM_VIB_MOT_MAX=100` without the frequency instead, and gave different values: 7.1–9.3 at `SIM_ACC1_RND=4` (3 runs: 9.32, 9.10, 7.14) and 16.8–23.5
@@ -303,14 +305,14 @@ written.
   and `SIM_GPS_VERR_Y=1`) is flagged by `check` in all 3 runs, and again on the landing-end script (velocity variance p95 0.33 vs 0.02). `nees-check` on run 1 shows velocity NEES 1.85 and 1.32
   vs baseline 0.10 and 0.06, and velocity innovation p95 0.73 vs 0.04. Baseline false-alarm rate, leave-one-out on the 6 landing-end baseline flights (`v6-base`): `ekf_vel_var_p95` is 0.02 in every run, and `check` flags 0 of 6 (all metrics within the normal range). That is 0/6, which bounds the rate only loosely: 95% upper bound about 39%. A single-metric flag from `triage`
   is reported as "possible", not as a real regression.
-- **Unmeasurable margins count as a regression.** If the loop has no usable crossover (coherence falls below 0.6
+- **Policy: unmeasurable margins count as a regression.** If the loop has no usable crossover (coherence falls below 0.6
   near instability), `sysid-check` flags `margin_unmeasurable` and fails. Roll gain 0.4 is flagged this way, not
   by a measured negative margin.
 - **Step-response gate is information only** (see the table above). Its steady-state floor was not tuned.
 - Vehicle type for `.bin` logs comes from `FRAME_CLASS` for Rover and Copter frames in the table
-  (`autonomy_eval/dataflash.py`); other frame classes come out as unknown. Plane, Sub and Blimp get a
-  fixed type from the firmware banner.
+  (`autonomy_eval/dataflash.py`), checked against ArduPilot source. Copter tailsitter and scripted frames
+  stay unknown. Plane, Sub and Blimp get a fixed type from the firmware banner.
 - `--bisect` only works when build labels are real ArduPilot git SHAs (not e.g. `.json` summaries
   saved under your own filenames), and matches commits by source directory, which can name a file
   in the right neighborhood whose actual change is unrelated (the bf080274 case above) -- worth a
-  human's five minutes, not a verdict. Unauthenticated GitHub API calls are rate-limited to 60/hour.
+  human's five minutes, not a verdict. Unauthenticated GitHub API calls are rate-limited to 60/hour. Set the `GITHUB_TOKEN` environment variable to a GitHub token to raise that to 5000/hour. The app reads it from the environment only and never writes it to a file.
