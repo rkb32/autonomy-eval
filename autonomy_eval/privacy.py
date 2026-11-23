@@ -22,6 +22,8 @@ from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 MEMO_KEY = "_user_log_memo"
 # One upload with 3 .bin logs makes about 20 reader calls per rerun, so a small cap would re-parse on
 # every click. Each entry is one session's derived result, freed when the session ends.
@@ -55,11 +57,27 @@ def memo(store: MutableMapping, reader: Callable[..., Any], name: str, data: byt
     # Callers get a copy, so changing a returned result cannot change what the next call sees.
     if key in cache:
         cache.move_to_end(key)
-        return copy.deepcopy(cache[key])
+        return _handout(cache[key])
     value = read_in_temp(name, data, reader, *args)
     cache[key] = value
     while len(cache) > MEMO_MAX_ENTRIES:
         cache.popitem(last=False)
+    return _handout(value)
+
+
+def _handout(value: Any) -> Any:
+    """What a caller receives. Containers are rebuilt so the caller cannot change the stored result.
+    Arrays are not copied (that was slow on every rerun); each caller gets a read-only view instead."""
+    if isinstance(value, np.ndarray):
+        view = value.view()
+        view.flags.writeable = False
+        return view
+    if isinstance(value, dict):
+        return {k: _handout(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_handout(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_handout(v) for v in value)
     return copy.deepcopy(value)
 
 

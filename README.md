@@ -172,6 +172,7 @@ Flight logs can hold sensitive data. This is what the app does with them. It des
 - The app receives the upload in memory. To read it, the app writes a temporary copy to a folder on the server's disk. It deletes that folder when the read ends, even if the read fails.
 - The server may keep its own copy of the upload until the visit ends. The app cannot control what the hosting company keeps.
 - To turn uploads off, the operator (the person who runs the server) sets `AUTONOMY_EVAL_HOSTED=1`. Do this if you want no uploads on a public copy.
+- After any change to the code or to the settings, the operator must reboot the hosted app. Otherwise the server can keep running the old code (this happened once, and it crashed the example tab until the app was rebooted).
 
 **Optional outside requests**
 

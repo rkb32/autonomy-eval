@@ -123,3 +123,18 @@ def test_connector_gives_fixed_message_for_an_unreadable_file(monkeypatch, tmp_p
     with pytest.raises(server.Refused) as info:
         server.summarize_log(str(bad))
     assert str(info.value) == "this file could not be read as a flight log"
+
+
+def test_memo_arrays_come_back_read_only_and_unchanged():
+    import numpy as np
+
+    def reader(path):
+        return {"t": np.arange(5.0)}
+
+    store = {}
+    first = privacy.memo(store, reader, "a.bin", b"data")
+    assert not first["t"].flags.writeable
+    with pytest.raises(ValueError):
+        first["t"][0] = 99.0
+    again = privacy.memo(store, reader, "a.bin", b"data")
+    assert again["t"][0] == 0.0
