@@ -13,6 +13,7 @@ upload while it is in memory, and they do not cover Streamlit's own copy of the 
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import tempfile
@@ -51,14 +52,15 @@ def memo(store: MutableMapping, reader: Callable[..., Any], name: str, data: byt
     key = (getattr(reader, "__module__", ""), getattr(reader, "__qualname__", repr(reader)),
            name, hashlib.sha256(data).hexdigest(), args)
     cache: OrderedDict = store.setdefault(MEMO_KEY, OrderedDict())
+    # Callers get a copy, so changing a returned result cannot change what the next call sees.
     if key in cache:
         cache.move_to_end(key)
-        return cache[key]
+        return copy.deepcopy(cache[key])
     value = read_in_temp(name, data, reader, *args)
     cache[key] = value
     while len(cache) > MEMO_MAX_ENTRIES:
         cache.popitem(last=False)
-    return value
+    return copy.deepcopy(value)
 
 
 def wipe(store: MutableMapping) -> None:

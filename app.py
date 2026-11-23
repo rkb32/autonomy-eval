@@ -34,6 +34,10 @@ HISTORIES = {
 STATUS_COLORS = {"REGRESSED": "#E5484D", "changed": "#D9A441", "ok": "#8B929C"}
 # Session-state keys that hold results derived from uploaded logs (see show_bisection and session_ai_verdict).
 UPLOAD_RESULT_KEYS = ("lookup|", "ai-verdict|", "looked-up|", "btn|")
+# Shown before any upload is accepted. It states what the server does with the file, so the user agrees to it.
+CONSENT_TEXT = ("I understand: my file is sent to the server running this app. The app reads it while I wait, using a "
+                "temporary copy that it deletes right after. The server may keep a copy until the session ends. "
+                "I am allowed to share this file.")
 SAMPLES = [
     ("sysid", "Run the stability sample (about 300 MB; the first run is slow)"),
     ("nees", "Run the estimator sample"),
@@ -807,18 +811,21 @@ with tab_upload:
         "autopilots record: armed time, battery, GPS, flight mode and messages.\n"
         "- **Oldest build first.** The possible cause of a regression comes from the commits between it and the "
         "build just before it.\n"
-        + ("- **Private:** your files are read into memory for this session only and are never kept."
-           if uploads_enabled() else "")
+        "- **Privacy:** the app reads the file using a temporary copy that it deletes right after each read. "
+        "The server may keep a copy until your session ends. Don't upload logs you aren't allowed to share."
     )
+    consent = uploads_enabled() and st.checkbox(CONSENT_TEXT, key="consent-upload")
     files = (st.file_uploader("Flight logs", type=["tlog", "bin", "ulg", "json"], accept_multiple_files=True)
-             if uploads_enabled() else None)
+             if consent else None)
     # A removed file must not leave its results behind, so forget them whenever the set of files changes.
-    names = tuple(sorted(f.name for f in files or []))
+    # file_id changes with every upload, so replacing a file with another of the same name also clears results.
+    names = tuple(sorted((f.name, f.file_id) for f in files or []))
     if st.session_state.get("_upload_names") != names:
         wipe(st.session_state)
         for k in [k for k in st.session_state.keys() if k.startswith(UPLOAD_RESULT_KEYS)]:
             del st.session_state[k]
         st.session_state.pop("summary_text", None)
+        st.session_state.pop("uploaded_runs", None)  # the comparison tables are built from these; drop them too
         st.session_state["_upload_names"] = names
     if not files and uploads_enabled():
         st.info("No logs yet? The Example result tab (press 1) shows the same comparison on real build history.")
@@ -908,13 +915,19 @@ with tab_checks:
     st.subheader("Check your own flights")
     if not uploads_enabled():
         st.info("Uploads are turned off on this hosted copy. Run the app on your computer to check your own flights.")
+    consent_check = uploads_enabled() and st.checkbox(CONSENT_TEXT, key="consent-check")
     cand = (st.file_uploader("New flight (.bin)", type=["bin"], accept_multiple_files=False, key="chk-candidate")
-            if uploads_enabled() else None)
+            if consent_check else None)
     base = (st.file_uploader(f"Earlier flights of the same mission (.bin, at least {MIN_BASELINE})",
                              type=["bin"], accept_multiple_files=True, key="chk-baseline")
-            if uploads_enabled() else [])
+            if consent_check else [])
     want_triage = st.checkbox("Also judge whether a flagged result is real or just noise", value=True,
                               key="chk-triage")
+    # Drop the shown result whenever the chosen files change, not only when the candidate is removed.
+    inputs = (cand.file_id if cand else None, tuple(f.file_id for f in base), want_triage)
+    if st.session_state.get("chk-inputs") != inputs:
+        st.session_state.pop("chk-result-upload", None)
+        st.session_state["chk-inputs"] = inputs
     if cand is None:
         st.session_state.pop("chk-result-upload", None)
         st.caption("Upload a new flight to begin.")

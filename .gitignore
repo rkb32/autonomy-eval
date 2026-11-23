@@ -6,3 +6,6 @@ __pycache__/
 .claude/
 runs/
 HANDOFF.md
+
+# Generated flight summaries (may contain firmware build IDs)
+summary.json
