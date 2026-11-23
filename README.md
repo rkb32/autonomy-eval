@@ -272,8 +272,10 @@ written.
 
 - `.bin` support is validated on two flights recorded in both formats, not on a history of builds:
   the CI server overwrites `.bin` logs daily, so a `.bin` baseline has to be collected over days.
-- DataFlash text has no severity, so in `.bin` logs errors come only from `ERR` records; a new
-  warning that exists only as text won't fail the build.
+- DataFlash text has no severity. In `.bin` logs, text gets a severity only from keyword rules
+  (`text_severity` in `autonomy_eval/dataflash.py`, e.g. "crash", "failsafe", "error"). Those rules are
+  checked only by their unit tests, not against real `.bin` text, so a new warning worded differently
+  still won't fail the build.
 - It has not yet caught a **confirmed** firmware regression in the wild; detection is validated
   against injected SITL faults of known size (table above), and the one CI anomaly it found traces
   to simulator nondeterminism.
@@ -305,7 +307,9 @@ written.
   near instability), `sysid-check` flags `margin_unmeasurable` and fails. Roll gain 0.4 is flagged this way, not
   by a measured negative margin.
 - **Step-response gate is information only** (see the table above). Its steady-state floor was not tuned.
-- Vehicle type for `.bin` logs is mapped from `FRAME_CLASS` for Rover and Copter frames only.
+- Vehicle type for `.bin` logs comes from `FRAME_CLASS` for Rover and Copter frames in the table
+  (`autonomy_eval/dataflash.py`); other frame classes come out as unknown. Plane, Sub and Blimp get a
+  fixed type from the firmware banner.
 - `--bisect` only works when build labels are real ArduPilot git SHAs (not e.g. `.json` summaries
   saved under your own filenames), and matches commits by source directory, which can name a file
   in the right neighborhood whose actual change is unrelated (the bf080274 case above) -- worth a
