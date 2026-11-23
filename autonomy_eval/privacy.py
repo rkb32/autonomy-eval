@@ -13,6 +13,7 @@ upload while it is in memory, and they do not cover Streamlit's own copy of the 
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import tempfile
@@ -20,6 +21,8 @@ from collections import OrderedDict
 from collections.abc import Callable, MutableMapping
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 MEMO_KEY = "_user_log_memo"
 # One upload with 3 .bin logs makes about 20 reader calls per rerun, so a small cap would re-parse on
@@ -51,14 +54,42 @@ def memo(store: MutableMapping, reader: Callable[..., Any], name: str, data: byt
     key = (getattr(reader, "__module__", ""), getattr(reader, "__qualname__", repr(reader)),
            name, hashlib.sha256(data).hexdigest(), args)
     cache: OrderedDict = store.setdefault(MEMO_KEY, OrderedDict())
+    # Callers get a copy, so changing a returned result cannot change what the next call sees.
     if key in cache:
         cache.move_to_end(key)
-        return cache[key]
+        return _handout(cache[key])
     value = read_in_temp(name, data, reader, *args)
+    _freeze(value)  # the stored arrays become read-only for good, so no caller can make them writable again
     cache[key] = value
     while len(cache) > MEMO_MAX_ENTRIES:
         cache.popitem(last=False)
-    return value
+    return _handout(value)
+
+
+def _freeze(value: Any) -> None:
+    """Make every array inside `value` read-only, in place."""
+    if isinstance(value, np.ndarray):
+        value.flags.writeable = False
+    elif isinstance(value, dict):
+        for v in value.values():
+            _freeze(v)
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            _freeze(v)
+
+
+def _handout(value: Any) -> Any:
+    """What a caller receives. Containers are rebuilt so the caller cannot change the stored result.
+    Arrays are not copied (that was slow on every rerun); each caller gets a read-only view of a read-only array."""
+    if isinstance(value, np.ndarray):
+        return value.view()
+    if isinstance(value, dict):
+        return {k: _handout(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_handout(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_handout(v) for v in value)
+    return copy.deepcopy(value)
 
 
 def wipe(store: MutableMapping) -> None:

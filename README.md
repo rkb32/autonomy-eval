@@ -164,46 +164,26 @@ To pull fresh runs from ArduPilot CI: `python scripts/fetch_autotest.py ArduCopt
 
 ## Privacy and data handling
 
-Flight logs can hold sensitive telemetry, so this is what the code does and does not do. These
-statements describe the code in this repository; they are not a guarantee about any server you run it on.
+Flight logs can hold sensitive data. This is what the app does with them. It describes this code only, not any server that runs it.
 
-**Running it locally (`streamlit run app.py`, the CLI).**
-- An uploaded log is written to a temporary directory only while it is read. The directory is deleted
-  when the read finishes, including when it fails. The app writes nothing else to disk, apart from the
-  public sample downloads.
-- A reader's result (for example a signal or a timing table) is kept only in your browser session, in
-  a small bounded memory that is cleared when you remove the files and freed when the session ends.
-  It is not shared with other sessions and is not in any cache that outlives the session.
-- Reading an uploaded log makes no network request. A test checks the reader path with the network blocked.
+**The public site**
 
-**Using the hosted Streamlit demo.**
-- A hosted copy must set `AUTONOMY_EVAL_HOSTED=1`. Then the upload boxes are removed and the app
-  accepts no log from any visitor. The hosted demo shows only the bundled public histories and samples.
-- Anyone who runs the app on their own machine, without that setting, gets the upload boxes. Only the
-  copy you run locally sees your files.
+- Visitors can upload a log only after they tick a consent box. The box explains what happens to the file.
+- The app receives the upload in memory. To read it, the app writes a temporary copy to a folder on the server's disk. It deletes that folder when the read ends, even if the read fails.
+- The server may keep its own copy of the upload until the visit ends. The app cannot control what the hosting company keeps.
+- To turn uploads off, the operator (the person who runs the server) sets `AUTONOMY_EVAL_HOSTED=1`. Do this if you want no uploads on a public copy.
+- After any change to the code or to the settings, the operator must reboot the hosted app. Otherwise the server can keep running the old code (this happened once, and it crashed the example tab until the app was rebooted).
 
-**Optional outbound requests.**
-- Looking up the likely commits (bisection) queries GitHub for the commit range between two build SHAs
-  from the firmware string of the uploaded log. For your own uploads it runs only when you press
-  "Look up the likely commits on GitHub". The request contains the two SHAs and no log contents.
-- The stability sample flights are downloaded from this repository's public release on first use.
-- The AI read sends Anthropic the metric name, commit count, and suspect commit messages and file paths.
-  It never sends log contents. It is off unless you set both `ANTHROPIC_API_KEY` and
-  `AUTONOMY_EVAL_SEND_TO_AI=1`, and the app shows a note whenever it is on.
+**Optional outside requests**
 
-**Limits.**
-- Memory: an uploaded file and its derived results sit in the server's memory while the session
-  lasts. The app does not encrypt memory and does not wipe it on a crash.
-- Streamlit keeps its own copy of an uploaded file until the session ends. The app cannot remove that.
-- File names you upload appear in the results and in the summary you can download.
-- Build labels come from the firmware string in the log, so a GitHub lookup reveals which ArduPilot build
-  you ran. Nothing else from the log leaves the machine.
+- **GitHub lookup, for uploaded logs:** runs only when a user presses its button. It sends two build IDs from the log (the codes that name the firmware builds), and nothing else from the log, so GitHub can see which two builds you ran.
+- **GitHub lookup, for the bundled example histories:** these are public ArduPilot builds, not uploads. The lookup runs by itself when the example result is shown, and a fresh server makes that request once. No uploaded build IDs are involved.
+- **Python version:** the web app is tested on Python 3.11 or newer. On older versions, install only what the command-line tool needs.
+- **AI read:** off unless the operator sets both `ANTHROPIC_API_KEY` (the access key for Anthropic, the company behind the AI) and `AUTONOMY_EVAL_SEND_TO_AI=1`. When on, it sends Anthropic the name of the measurement that got worse, how many commits lie between the two builds, and, for each commit that touches related code, its ID, its message and the changed file paths. It never sends log contents.
 
-**What you can say to someone sharing real flight logs.** Analysing an upload with the app or the CLI
-does not send the log anywhere. Results stay in your session, and the temporary copy is deleted after
-each read. Optional lookups send build labels to GitHub and, only if you turn the AI read on, metric
-names and commit data to Anthropic. Do not say the hosted demo never keeps data, or that nothing is ever
-retained.
+**Your own computer**
+
+Running the app on your computer keeps your files on your computer. The only exceptions are the GitHub lookup and the AI read, and only if you use them.
 
 ## Six things the real data got wrong that a demo wouldn't have
 

@@ -206,15 +206,26 @@ def derived_signal(path: str | Path, msg: str, expr: str):
     Only numbers, field names, + - * /, unary minus, and abs() or sqrt() are allowed.
     Raises ValueError with a plain message otherwise.
     """
-    tree = ast.parse(expr, mode="eval")
+    if len(expr) > 200:
+        raise ValueError("the expression is too long (200 characters at most)")
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        raise ValueError("the expression is not valid (check for a missing number or name)") from None
     names: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, _ALLOWED):
             raise ValueError(f"'{type(node).__name__}' is not allowed here")
+        # Numbers only: a string times a huge number would allocate gigabytes before the check fails.
+        if isinstance(node, ast.Constant) and not isinstance(node.value, (int, float)):
+            raise ValueError("only numbers are allowed here")
         if isinstance(node, ast.Name):
             names.add(node.id)
-        if isinstance(node, ast.Call) and not (isinstance(node.func, ast.Name) and node.func.id in _FUNCS):
-            raise ValueError("only abs() and sqrt() can be called")
+        if isinstance(node, ast.Call):
+            if not (isinstance(node.func, ast.Name) and node.func.id in _FUNCS):
+                raise ValueError("only abs() and sqrt() can be called")
+            if len(node.args) != 1 or node.keywords:
+                raise ValueError("abs() and sqrt() take exactly one value")
     columns = message_columns(path, msg)
     if not columns:
         raise ValueError(f"the log has no {msg} messages")
@@ -225,8 +236,12 @@ def derived_signal(path: str | Path, msg: str, expr: str):
     if t.size == 0:
         raise ValueError(f"{msg} has no records")
     env = {**cols, **_FUNCS}
-    value = eval(compile(tree, "<expression>", "eval"), {"__builtins__": {}}, env)  # names checked above
-    return t, np.broadcast_to(np.asarray(value, dtype=float), t.shape)
+    try:
+        value = eval(compile(tree, "<expression>", "eval"), {"__builtins__": {}}, env)  # names checked above
+        return t, np.broadcast_to(np.asarray(value, dtype=float), t.shape)
+    except (TypeError, ZeroDivisionError, ValueError) as e:
+        # A bare function name ("abs") or a division by a constant zero must give a plain message, not a crash.
+        raise ValueError(f"the expression could not be computed ({type(e).__name__})") from None
 
 
 # ---- rate tracking and vibration -------------------------------------------------------------------

@@ -19,6 +19,7 @@ import os
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -26,7 +27,7 @@ from .compare import Comparison
 from .metrics import FlightSummary
 
 REPO = "ArduPilot/ardupilot"
-SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+SHA_RE = re.compile(r"[0-9a-f]{7,40}")  # used with fullmatch(): a trailing newline must not pass
 MAX_COMMITS = 25  # bound on per-commit API calls; wider ranges are reported but not localized
 # The AI read sends the metric name and commit data to Anthropic. It needs this opt-in as well as the
 # key, so having a key in the environment for another tool never sends anything.
@@ -75,6 +76,9 @@ class Bisection:
 
 
 def _get(url: str) -> dict:
+    # Only GitHub's API is ever called, so refuse any other address (for example a local file).
+    if not url.startswith("https://api.github.com/"):
+        raise ValueError("refusing to open a URL outside api.github.com")
     headers = {"User-Agent": "autonomy-eval", "Accept": "application/vnd.github+json"}
     # Unauthenticated calls are limited to 60 an hour; a token raises that to 5000. It is read from the
     # environment only, so it is never written to a file or a commit.
@@ -82,8 +86,22 @@ def _get(url: str) -> dict:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with _opener().open(req, timeout=10) as r:  # nosec B310: scheme and host checked above
         return json.load(r)
+
+
+class _GitHubOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only if it stays on api.github.com. Otherwise the token could go to another host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not newurl.startswith("https://api.github.com/"):
+            host = urllib.parse.urlparse(newurl).netloc or "an unknown place"
+            raise urllib.error.URLError(f"refusing to follow a redirect to {host}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _opener():
+    return urllib.request.build_opener(_GitHubOnlyRedirects)
 
 
 def _subsystem_dirs(metric: str) -> tuple[str, ...] | None:
@@ -94,7 +112,7 @@ def localize(metric: str, base: str, head: str) -> Bisection | None:
     """Commits between `base` and `head` that touch directories relevant to `metric`. None if
     either label isn't a real git SHA (e.g. a filename-derived label) or the metric isn't mapped."""
     dirs = _subsystem_dirs(metric)
-    if dirs is None or not (SHA_RE.match(base) and SHA_RE.match(head)):
+    if dirs is None or not (SHA_RE.fullmatch(base) and SHA_RE.fullmatch(head)):
         return None
     b = Bisection(metric, base, head, f"https://github.com/{REPO}/compare/{base}...{head}")
     try:
@@ -137,8 +155,8 @@ SYSTEM = (
 )
 
 
-def ai_enabled() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY")) and os.environ.get(AI_OPT_IN_ENV) == "1"
+def ai_enabled(api_key: str | None = None) -> bool:
+    return bool(api_key or os.environ.get("ANTHROPIC_API_KEY")) and os.environ.get(AI_OPT_IN_ENV) == "1"
 
 
 def lookup(metric: str, base: str, head: str, store) -> Bisection | None:
@@ -153,8 +171,13 @@ def lookup(metric: str, base: str, head: str, store) -> Bisection | None:
     return b
 
 
-def ai_verdict(b: Bisection) -> AIVerdict | None:
-    if b.error or not ai_enabled():
+def ai_verdict(b: Bisection, api_key: str | None = None) -> AIVerdict | None:
+    """The AI read. If the caller passes a key, that key is used; otherwise ANTHROPIC_API_KEY is used
+    (the command line and the app both call this without a key today). The key is never stored or
+    printed. On failure only the error's type is reported, because an error's text can contain part
+    of the request."""
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if b.error or not key or os.environ.get(AI_OPT_IN_ENV) != "1":
         return None
     import anthropic
 
@@ -162,14 +185,14 @@ def ai_verdict(b: Bisection) -> AIVerdict | None:
         "metric": b.metric, "commits_in_range": b.total_commits,
         "suspect_commits": [{"sha": s.sha, "message": s.message, "files": s.files} for s in b.suspects],
     }
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(api_key=key)
     try:
         response = client.messages.create(
             model="claude-sonnet-5", max_tokens=300, system=SYSTEM,
             messages=[{"role": "user", "content": json.dumps(payload, indent=1)}],
         )
     except anthropic.APIError as e:
-        print(f"warning: AI verdict failed, continuing without it: {e}", file=sys.stderr)
+        print(f"warning: AI verdict failed ({type(e).__name__}), continuing without it", file=sys.stderr)
         return None
     text = "".join(part.text for part in response.content if part.type == "text").strip()
     try:
