@@ -46,22 +46,88 @@ def test_memo_hands_out_copies_so_callers_cannot_change_the_stored_result():
     assert third == {"values": [1, 2, 3]}
 
 
-def test_derived_signal_refuses_strings_and_long_expressions(tmp_path):
+@pytest.fixture
+def stub_log(monkeypatch):
+    # Give the guard real field names, so the only thing that can fail is the expression itself.
+    import numpy as np
+    from autonomy_eval import flightdata
+    monkeypatch.setattr(flightdata, "message_columns", lambda path, msg: {"Volt": 0, "Curr": 0})
+    monkeypatch.setattr(flightdata, "read_fields",
+                        lambda path, msg, names: (np.array([0.0]), {n: np.array([1.0]) for n in names}))
+
+
+@pytest.mark.parametrize("bad, why", [
+    ('"a" * 4000000000', "only numbers"),
+    ("'x'", "only numbers"),
+    ("1" * 300, "too long"),
+])
+def test_derived_signal_refuses_strings_and_long_expressions(tmp_path, stub_log, bad, why):
     from autonomy_eval import flightdata
     log = tmp_path / "x.bin"
     log.write_bytes(b"")
-    for bad in ['"a" * 4000000000', "'x'", "1" * 300]:
-        with pytest.raises(ValueError):
-            flightdata.derived_signal(log, "BAT", bad)
-
-
-@pytest.mark.parametrize("bad", ["Volt *", "abs(1, 2)", "sqrt()", "1 +", "2 ** 3"])
-def test_bad_expressions_give_a_plain_value_error(tmp_path, bad):
-    from autonomy_eval import flightdata
-    log = tmp_path / "x.bin"
-    log.write_bytes(b"")
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=why):
         flightdata.derived_signal(log, "BAT", bad)
+
+
+@pytest.mark.parametrize("bad, why", [
+    ("Volt *", "not valid"),
+    ("abs(1, 2)", "exactly one value"),
+    ("sqrt()", "exactly one value"),
+    ("1 +", "not valid"),
+    ("2 ** 3", "not allowed"),
+])
+def test_bad_expressions_give_a_plain_value_error(tmp_path, stub_log, bad, why):
+    from autonomy_eval import flightdata
+    log = tmp_path / "x.bin"
+    log.write_bytes(b"")
+    with pytest.raises(ValueError, match=why):
+        flightdata.derived_signal(log, "BAT", bad)
+
+
+def test_array_field_gives_a_plain_value_error(monkeypatch, tmp_path):
+    from autonomy_eval import flightdata
+
+    class Row:
+        TimeUS = 1000
+        ISBD_SAMPLES = [1, 2, 3]  # an array-type field, not one number per row
+
+    class FakeLog:
+        rows = [Row()]
+
+        def recv_match(self, type):
+            return self.rows.pop() if self.rows else None
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(flightdata, "_open", lambda path: FakeLog())
+    with pytest.raises(ValueError, match="not a single number"):
+        flightdata.read_fields(tmp_path / "x.bin", "ISBD", ["ISBD_SAMPLES"])
+
+
+def test_cut_short_github_body_is_reported_not_raised(monkeypatch):
+    import http.client
+    monkeypatch.setattr(bisect, "_get", lambda url: (_ for _ in ()).throw(http.client.IncompleteRead(b"{")))
+    b = bisect.localize("xtrack_mean_m", "bf08027", "b2b1b3d")
+    assert b is not None and b.error.startswith("couldn't reach GitHub")
+
+
+def test_parser_printing_goes_to_stderr_not_stdout(monkeypatch, capsys, tmp_path):
+    from mcp_server import server
+    monkeypatch.setenv(server.ENV_DIR, str(tmp_path))
+    log = tmp_path / "bad.bin"
+    log.write_bytes(b"x")
+
+    def noisy_load(path):
+        print("DFFormat: Unsupported format char")  # pymavlink prints parse problems like this
+        raise ValueError("bad")
+
+    monkeypatch.setattr(server, "load", noisy_load)
+    with pytest.raises(server.Refused):
+        server._read(str(log))
+    captured = capsys.readouterr()
+    assert captured.out == ""  # stdout carries the MCP messages; nothing else may write there
+    assert "Unsupported format char" in captured.err
 
 
 def test_github_redirect_off_github_is_refused():
@@ -171,3 +237,15 @@ def test_connector_keeps_distinct_long_names_distinct():
     second = server._unique(server._label(base + "R"), used)
     assert first != second
     assert len(first) <= server.MAX_LABEL_CHARS and len(second) <= server.MAX_LABEL_CHARS
+
+
+def test_connector_path_checks_refuse_escapes_and_non_logs(monkeypatch, tmp_path):
+    from mcp_server import server
+    (tmp_path / "notes.txt").write_bytes(b"x")
+    monkeypatch.setenv(server.ENV_DIR, str(tmp_path))
+    for bad in [str(tmp_path / ".." / "outside.bin"), str(tmp_path / "notes.txt"), str(tmp_path / "missing.bin")]:
+        with pytest.raises(server.Refused):
+            server._checked_file(bad)
+    monkeypatch.setenv(server.ENV_DIR, "relative/logs")
+    with pytest.raises(server.Refused):
+        server._allowed_root()

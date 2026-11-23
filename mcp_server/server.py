@@ -9,6 +9,7 @@ Do not print to stdout in this file: over stdio, stdout carries the protocol mes
 """
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import sys
@@ -118,10 +119,14 @@ def _map(d) -> dict:
 
 
 def _read(path: str):
-    """Load one log. Any failure gives the fixed message, so no text from the file reaches the AI client."""
+    """Load one log. Any failure gives the fixed message, so no text from the file reaches the AI client.
+
+    The parsers print their own warnings to stdout, and over stdio stdout carries the protocol. So
+    anything they print goes to stderr instead."""
     checked = _checked_file(path)
     try:
-        return load(checked)
+        with contextlib.redirect_stdout(sys.stderr):
+            return load(checked)
     except Exception:
         raise Refused(FIXED_READ_ERROR) from None
 

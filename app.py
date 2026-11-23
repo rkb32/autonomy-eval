@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import json
-import tempfile
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +21,7 @@ from autonomy_eval.metrics import METRIC_SERIES, FlightSummary, load, timeline, 
 from autonomy_eval.report import LABELS, SEVERITY
 from autonomy_eval import batch, flightdata
 from autonomy_eval.health import timing_health
-from autonomy_eval.privacy import memo, read_in_temp, uploads_enabled, wipe
+from autonomy_eval.privacy import memo, read_in_temp, temp_folder, uploads_enabled, wipe
 from autonomy_eval.signals import arm_time, list_signals, read_signal
 
 EXAMPLES = Path(__file__).parent / "examples"
@@ -487,8 +486,14 @@ def views_section(bins: list) -> None:
         if lat.size == 0:
             st.info("No 3D GPS fix in this log.")
         else:
-            st.map(_thin(pd.DataFrame({"lat": lat, "lon": lng}), 2000), size=4)
-            st.caption(f"{lat.size} GPS samples with a 3D fix or better.")
+            # Drawn here from the log's own numbers. st.map would load map tiles from a third-party
+            # server, which would reveal roughly where the flight was. East is scaled by cos(latitude)
+            # so the shape is not stretched.
+            track = _thin(pd.DataFrame({"lat": lat, "lon": lng}), 2000).assign(
+                east=lambda d: d["lon"] * np.cos(np.radians(d["lat"].mean())))
+            st.scatter_chart(track, x="east", y="lat", x_label="east (degrees, scaled)", y_label="north (degrees)",
+                             size=4)
+            st.caption(f"{lat.size} GPS samples with a 3D fix or better. Plotted from the log; no map tiles are loaded.")
 
     with st.expander("Motor and servo outputs"):
         t, c = fd_call(log_name, data, "actuator_outputs")
@@ -826,15 +831,17 @@ with tab_upload:
             del st.session_state[k]
         st.session_state.pop("summary_text", None)
         st.session_state.pop("uploaded_runs", None)  # the comparison tables are built from these; drop them too
+        st.session_state.pop("notes", None)          # notes and the selected view log name the old files
+        st.session_state.pop("views-log", None)
         st.session_state["_upload_names"] = names
     if not files and uploads_enabled():
         st.info("No logs yet? The Example result tab (press 1) shows the same comparison on real build history.")
     if files and st.button(f"Analyze {len(files)} log(s)", type="primary"):
         runs, failed = [], []
         progress = st.progress(0.0, text="Reading logs...")
-        with tempfile.TemporaryDirectory() as tmp:
+        with temp_folder() as tmp:
             for i, f in enumerate(files):
-                path = Path(tmp) / Path(f.name).name
+                path = tmp / Path(f.name).name
                 path.write_bytes(f.getvalue())
                 try:
                     s = load(path)
@@ -934,10 +941,10 @@ with tab_checks:
     elif len(base) < MIN_BASELINE:
         st.caption(f"Upload at least {MIN_BASELINE} earlier flights to compare with.")
     elif st.button("Run check", type="primary", key="chk-run"):
-        with tempfile.TemporaryDirectory() as tmp:
+        with temp_folder() as tmp:
             paths = []
             for i, f in enumerate([cand, *base]):
-                d = Path(tmp) / str(i)
+                d = tmp / str(i)
                 d.mkdir()
                 p = d / Path(f.name).name
                 p.write_bytes(f.getvalue())
