@@ -249,3 +249,58 @@ def test_connector_path_checks_refuse_escapes_and_non_logs(monkeypatch, tmp_path
     monkeypatch.setenv(server.ENV_DIR, "relative/logs")
     with pytest.raises(server.Refused):
         server._allowed_root()
+
+
+class _CaptureOpener:
+    """Records the request headers and fails the call, so no network is used."""
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    def open(self, req, timeout=None):
+        self.sink.append(dict(req.headers))
+        raise urllib.error.URLError("offline")
+
+
+def test_github_token_is_sent_only_when_set(monkeypatch):
+    url = "https://api.github.com/repos/x/y"
+    sent = []
+    monkeypatch.setattr(bisect, "_opener", lambda: _CaptureOpener(sent))
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    with pytest.raises(urllib.error.URLError):
+        bisect._get(url)
+    monkeypatch.setenv("GITHUB_TOKEN", "TEST-TOKEN-1")
+    with pytest.raises(urllib.error.URLError):
+        bisect._get(url)
+    assert "Authorization" not in sent[0]
+    assert sent[1]["Authorization"] == "Bearer TEST-TOKEN-1"
+
+
+@pytest.mark.parametrize("frame_class, mav_type", [
+    (1, 2),    # quad -> QUADROTOR
+    (7, 15),   # tri -> TRICOPTER
+    (8, 3),    # single -> COAXIAL (as in AP_MotorsSingle.cpp)
+    (9, 3),    # coax -> COAXIAL
+    (12, 29),  # dodecahexa -> DODECAROTOR
+    (14, 35),  # deca -> DECAROTOR
+])
+def test_copter_frame_classes_map_to_heartbeat_types(frame_class, mav_type):
+    from autonomy_eval import dataflash
+    (vt,) = dataflash._vehicle_type(0.0, "ArduCopter", frame_class)
+    assert vt.mav_type == mav_type
+
+
+def test_copter_tailsitter_and_scripted_frames_stay_unknown():
+    from autonomy_eval import dataflash
+    for frame_class in (0, 10, 15, 16, 17):
+        assert list(dataflash._vehicle_type(0.0, "ArduCopter", frame_class)) == []
+
+
+def test_real_boot_log_text_is_joined_before_severity():
+    # MSG text is logged in chunks that share an ID. The reader must join them, so the keyword rules
+    # see whole messages. This real log's long messages are the test.
+    from autonomy_eval.dataflash import read_dataflash
+    from autonomy_eval.telemetry import Text
+    texts = [x.text for x in read_dataflash("tests/data/rover-boot-a64bad1a.BIN") if isinstance(x, Text)]
+    assert "EKF3 IMU0 MAG0 initial yaw alignment complete" in texts
+    assert not any(t.endswith("initial yaw alignment comp") for t in texts)  # no cut-off fragment

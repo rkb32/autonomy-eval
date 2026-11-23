@@ -51,7 +51,10 @@ def text_severity(text: str) -> int | None:
 # as unknown rather than guessed.
 FRAME_TYPES = {
     "ArduRover": {1: 10, 2: 11, 3: 10},                            # rover, boat, balancebot
-    "ArduCopter": {1: 2, 2: 13, 3: 14, 4: 14, 5: 13, 6: 4, 7: 15, 11: 4, 13: 4},  # quad hexa octa ... heli tri
+    # Checked against ArduPilot source: AP_Motors_Class.h (frame numbers), AP_MotorsMatrix.cpp,
+    # AP_MotorsTri.cpp, AP_MotorsSingle.cpp, AP_MotorsCoax.cpp, AP_MotorsHeli.cpp. The single-rotor frame
+    # reports COAXIAL, as the source does. Tailsitter (10) and scripted frames (15-17) stay unknown.
+    "ArduCopter": {1: 2, 2: 13, 3: 14, 4: 14, 5: 13, 6: 4, 7: 15, 8: 3, 9: 3, 11: 4, 12: 29, 13: 4, 14: 35},
 }
 DEFAULT_TYPES = {"ArduPlane": 1, "ArduSub": 12, "Blimp": 7}
 
