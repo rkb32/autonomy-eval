@@ -25,19 +25,38 @@ jobs:
           curl -fsS --retry 3 -m 120 -o index.html https://autotest.ardupilot.org/
           grep -oE 'Rover-Scripting-[0-9]{8}\.BIN|ArduCopter-TerrainFailsafe-[0-9]{8}\.BIN' index.html | sort -u > files.txt
           echo "files listed: $(wc -l < files.txt)"
+          [ -s files.txt ] || { echo "the index lists no logs" >&2; exit 1; }
           # curl --retry does not cover a connection reset mid-download (run 43900362913 died on one file),
-          # so each file gets its own retries with a growing pause.
+          # so each file gets its own retries with a growing pause. curl exit 22 is an HTTP error such as
+          # 404: the server does not have that file, so retrying cannot help and the file is skipped.
           fetch() {
             for attempt in 1 2 3 4 5; do
-              curl -fsS -m 120 -o "$2" "$1" && return 0
+              rc=0
+              curl -fsS -m 120 -o "$2" "$1" || rc=$?
+              if [ "$rc" -eq 0 ]; then return 0; fi
+              rm -f "$2"
+              if [ "$rc" -eq 22 ]; then return 22; fi
               echo "retry $attempt for $(basename "$2")" >&2
               sleep $((attempt * 10))
             done
             return 1
           }
+          : > bin/_missing.txt
+          downloaded=0
           while read -r f; do
-            fetch "https://autotest.ardupilot.org/$f" "bin/$f"
+            rc=0
+            fetch "https://autotest.ardupilot.org/$f" "bin/$f" || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              downloaded=$((downloaded + 1))
+            elif [ "$rc" -eq 22 ]; then
+              echo "listed but not on the server (HTTP error): $f" >&2
+              echo "$f" >> bin/_missing.txt
+            else
+              echo "failed after retries: $f" >&2
+              exit 1
+            fi
           done < files.txt
+          [ "$downloaded" -gt 0 ] || { echo "no logs downloaded" >&2; exit 1; }
           cp files.txt bin/_listing.txt
           (cd bin && sha256sum *.BIN > ../manifest.sha256)
           echo "run date (UTC): $(date -u +%F)" > bin/_run.txt
