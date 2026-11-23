@@ -110,7 +110,7 @@ def test_commit_id_with_trailing_newline_is_refused():
 
 def test_connector_cleans_keys_of_summary_maps():
     from mcp_server import server
-    out = server._clean({"bad\nkey": "x" * 300, "ok": 1.5})
+    out = server._map({"bad\nkey": "x" * 300, "ok": 1.5})
     assert all("\n" not in k and len(k) <= server.MAX_LABEL_CHARS for k in out)
     assert out[server._label("ok")] == 1.5
 
@@ -138,3 +138,36 @@ def test_memo_arrays_come_back_read_only_and_unchanged():
         first["t"][0] = 99.0
     again = privacy.memo(store, reader, "a.bin", b"data")
     assert again["t"][0] == 0.0
+
+
+def test_stored_arrays_cannot_be_made_writable_again():
+    import numpy as np
+
+    def reader(path):
+        return {"t": np.arange(4.0)}
+
+    store = {}
+    got = privacy.memo(store, reader, "a.bin", b"data")
+    with pytest.raises(ValueError):
+        got["t"].setflags(write=True)
+    with pytest.raises(ValueError):
+        got["t"][0] = 7.0
+    again = privacy.memo(store, reader, "a.bin", b"data")
+    assert again["t"][0] == 0.0
+
+
+def test_connector_refuses_nested_values_in_summaries():
+    from mcp_server import server
+    with pytest.raises(server.Refused, match="could not be read"):
+        server._map({"quality": {"nested": 1}})
+    assert server._map({"count": 3, "ok": True, "ratio": 0.5}) == {"count": 3, "ok": True, "ratio": 0.5}
+
+
+def test_connector_keeps_distinct_long_names_distinct():
+    from mcp_server import server
+    used: set = set()
+    base = "A" * 80
+    first = server._unique(server._label(base + "L"), used)
+    second = server._unique(server._label(base + "R"), used)
+    assert first != second
+    assert len(first) <= server.MAX_LABEL_CHARS and len(second) <= server.MAX_LABEL_CHARS

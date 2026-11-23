@@ -176,7 +176,9 @@ Flight logs can hold sensitive data. This is what the app does with them. It des
 
 **Optional outside requests**
 
-- **GitHub lookup:** runs only when a user presses its button. It sends two build IDs from the log (the codes that name the firmware builds). It sends nothing else from the log, so GitHub can see which two builds you ran.
+- **GitHub lookup, for uploaded logs:** runs only when a user presses its button. It sends two build IDs from the log (the codes that name the firmware builds), and nothing else from the log, so GitHub can see which two builds you ran.
+- **GitHub lookup, for the bundled example histories:** these are public ArduPilot builds, not uploads. The lookup runs by itself when the example result is shown, and a fresh server makes that request once. No uploaded build IDs are involved.
+- **Python version:** the web app is tested on Python 3.11 or newer. On older versions, install only what the command-line tool needs.
 - **AI read:** off unless the operator sets both `ANTHROPIC_API_KEY` (the access key for Anthropic, the company behind the AI) and `AUTONOMY_EVAL_SEND_TO_AI=1`. When on, it sends Anthropic the name of the measurement that got worse, how many commits lie between the two builds, and, for each commit that touches related code, its ID, its message and the changed file paths. It never sends log contents.
 
 **Your own computer**

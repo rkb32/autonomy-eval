@@ -12,9 +12,9 @@ It offers two tools:
 1. Open a terminal in the autonomy-eval folder.
 2. Install the MCP package into the project's virtual environment:
 
-   `.venv\Scripts\python.exe -m pip install mcp`
+   `.venv\Scripts\python.exe -m pip install -r mcp_server\requirements.txt`
 
-   `requirements.txt` in this folder pins the package to `mcp<2`. `server.py` uses the `FastMCP` class from that version. If you install `mcp` without the pin, the server will not start.
+   This installs `mcp` version 1.2 or newer but below 2. `server.py` uses the `FastMCP` class from that range. Installing `mcp` on its own can pick version 2, and then the server will not start.
 
 ## Choose the one folder it may read
 

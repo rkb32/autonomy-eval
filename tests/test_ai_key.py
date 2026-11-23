@@ -1,9 +1,12 @@
 import os
 from unittest.mock import patch
 
-import anthropic
+import pytest
 
 from autonomy_eval import bisect
+
+# The SDK is an optional install for the AI read; skip this module, rather than fail the suite, without it.
+anthropic = pytest.importorskip("anthropic")
 
 OPT_IN = "AUTONOMY_EVAL_SEND_TO_AI"
 
