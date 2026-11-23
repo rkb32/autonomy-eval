@@ -283,8 +283,8 @@ written.
   quieter (vibration floor 1.0 m/s/s vs a SITL baseline of 0.05), so mild simulated faults can sit
   under them — that's why the 0.4 roll-gain level isn't flagged. Whether floors should scale with
   the baseline is an open design question. A `sim=True` option (`compare` in `autonomy_eval/compare.py`)
-  already uses a floor of 10 baseline median-absolute-deviations for simulated baselines. It is not on the
-  command line, and its false-alarm rate is not measured yet.
+  also checks each change against 10 baseline median-absolute-deviations. It uses whichever of that and the
+  absolute floor is smaller, so it can only lower the threshold. It is not on the command line, and its false-alarm rate is not measured yet.
 - **Motor vibration is not benchmarked.** The accelerometer row (table above) reproduces: with `SIM_VIB_FREQ_X/Y/Z=100`,
   `SIM_ACC1_RND` 1.5, 4 and 10 give vibration p95 1.1, 2.92–2.93 and 7.31–7.32 m/s/s over 3 runs each, matching the 1.10, 2.92 and 7.30 in the table. The v2 batch set
   `SIM_VIB_MOT_MAX=100` without the frequency instead, and gave different values: 7.1–9.3 at `SIM_ACC1_RND=4` (3 runs: 9.32, 9.10, 7.14) and 16.8–23.5
